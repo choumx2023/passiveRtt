@@ -50,23 +50,23 @@ class NetworkTrafficTable(CuckooHashTable):
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
-            
+        target_values : ListBuffer
         if table_num is not None:
             if icmp_type == 8:  # ICMP请求
                 # 直接插入，等待响应
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
+                
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element( new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element( new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
             elif icmp_type == 0:  # ICMP响应
                 # 尝试找到匹配的请求
                 print(key)
                 print(value)
-                target_values = self.values1 if table_num == 1 else self.values2
-                target_values : list[ListBuffer]
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: x['type'] == 8 and x['seq'] == y['seq']
                 condition2 = lambda x, y: False
-                prior_value = target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     print(f"prior_value: {prior_value}")
                     request_timestamp = prior_value['timestamp']
@@ -92,17 +92,18 @@ class NetworkTrafficTable(CuckooHashTable):
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
+        target_values : ListBuffer
         if table_num is not None:
             if qr == 0:  # Query
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
             elif qr == 1:  # Response
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['dns_id'] == new_item['dns_id'] and existing_item['is_qr'] == 0 and new_item['is_qr'] == 1
                 condition2 = lambda x, y: False
-                prior_value = target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     # find the matching request and calculate RTT
                     request_timestamp = prior_value['timestamp']
@@ -128,17 +129,18 @@ class NetworkTrafficTable(CuckooHashTable):
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
+        target_values : ListBuffer
         if table_num is not None:
             if ntp_mode == 3:
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
             elif ntp_mode == 4:
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['mode'] == 3 and new_item['mode'] == 4 and new_item['ref'] == existing_item['orig']
                 condition2 = lambda x, y: False
-                prior_value = target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -199,13 +201,14 @@ class TCPTrafficTable(CuckooHashTable):
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
+        target_values : ListBuffer
         if table_num is not None:
             # ACK & SYN
             if ack_flag:
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['SYN'] == 1 and existing_item['ACK'] == 0 and existing_item['seq'] == new_item['ack'] - 1
                 condition2 = lambda existing_item, new_item: False
-                prior_value = target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -214,10 +217,10 @@ class TCPTrafficTable(CuckooHashTable):
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'SYN')
             # SYN
             else:   
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     # 处理Timestamp数据包
     def process_timestamp_packet(self, packet):
         src_ip, dst_ip = extract_ip(packet)
@@ -228,15 +231,16 @@ class TCPTrafficTable(CuckooHashTable):
         timestamp = packet.time
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr}
         table_num, index = self.lookup(key)
+        target_values : ListBuffer
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
         if table_num is not None:
             if ack_flag:
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item.get('ts_val') == new_item.get('ts_val') and existing_item.get('ts_ecr') == new_item.get('ts_ecr')
                 condition2 = lambda x, y: False
-                prior_value = target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = False)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = False)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -244,10 +248,10 @@ class TCPTrafficTable(CuckooHashTable):
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Timestamp')
             else:   
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     # 处理普通数据包
     def process_normal_packet(self, packet):
         src_ip, dst_ip = extract_ip(packet)
@@ -260,10 +264,11 @@ class TCPTrafficTable(CuckooHashTable):
         if table_num is None:
             self.insert(key)
         table_num, index = self.lookup(key)
+        target_values : ListBuffer
         if table_num is not None:
             if ack_flag:
-                target_values = self.values1 if table_num == 1 else self.values2
-                prior_value = target_values[index].process_normal_tcp_element(new_element = value, is_add = True)
+                target_values = self.values[table_num][index]
+                prior_value = target_values.process_normal_tcp_element(new_element = value, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -271,10 +276,10 @@ class TCPTrafficTable(CuckooHashTable):
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Normal')
             else:   
-                target_values = self.values1 if table_num == 1 else self.values2
+                target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values[index].process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     def calculate_rtt(self, value, prior_value):
         weight = 0
         if 'ts_val' in value and 'ts_val' in prior_value:

@@ -17,7 +17,9 @@ class ListBuffer:
         
         self.size = size
         self.buffer = []
-    def add(self, item):
+    def add(self, item : dict) -> None:
+        if len(item) == 1:
+            return
         self.buffer.append(item)
         if len(self.buffer) > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
@@ -133,10 +135,9 @@ class CuckooHashTable():
         ip_int = int(ipaddress.ip_address(ip))
         if ipaddress.ip_address(ip).version == 6:
             ip_int = ip_int % 2**64  # 简化 IPv6 地址
-        return ip_int
-    def hash_functions(self, key_dict, function_id) -> int:
+        return ip_int 
+    def hash_functions(self, key_dict: dict, function_id: int) -> int:
         result = 0
-
         if 'ip' in key_dict and 'protocol' in key_dict:
             ip_hashes = [int(ipaddress.ip_address(ip)) & ((1 << 64) - 1) for ip in key_dict['ip']]
             # 对IP哈希值求和并加上它们的乘积，以确保顺序不影响最终哈希值
@@ -161,7 +162,7 @@ class CuckooHashTable():
         self.size *= 2
         old_tables = self.tables
         old_values = self.values
-        self.tables = [[False, 'no_stage'] * self.size for _ in range(3)]
+        self.tables = [[None] * self.size for _ in range(3)]
         self.values = [[ListBuffer(self.buffersize) for _ in range(self.size)] for _ in range(3)]
         self.num_items = 0  # Reset item count
 
@@ -197,7 +198,7 @@ class CuckooHashTable():
                     for item in old_values2[i].buffer:
                         target_values[index].add(item)
         '''
-    def insert(self, key: dict, value : ListBuffer = None) -> bool:
+    def insert(self, key: dict, value  : dict = {}) -> bool:
         '''
         function: insert a key into the index table , if the insertion fails after multiple attempts and rehashing, return False
         parameter:
@@ -206,16 +207,30 @@ class CuckooHashTable():
         return:
             success: a boolean value indicating whether the insertion is successful
         '''
-        if value is None:
-            value = ListBuffer(self.buffersize)
+        if not isinstance(key, dict):
+            raise ValueError("Key must be a dictionary")
+        table_num, _= self.lookup(key)
+        if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
+            self.values[table_num][index].add(value)
+            return True
+
         generate_key = [key, 'stage_1']
+        if value == {}:
+            value['direction'] = 'forward'    
         success, _ = self._insert_directly(generate_key, value)
+
         if not success:
             self._rehash()
-            success, _ = self._insert_directly(key, value)
+            success, _ = self._insert_directly(generate_key, value)
         return success
     
-    def _insert_directly(self, key: typing.List[typing.Union[dict, str]], value: ListBuffer) -> typing.Tuple[bool, list]:
+    def _insert_directly(self, key: typing.List[typing.Union[dict, str]], value: dict) -> typing.Tuple[bool, list]:
         '''
         function: insert a key into the index table without rehashing
         parameter:
@@ -230,39 +245,72 @@ class CuckooHashTable():
         current_value = value
         starting_table = 0
         is_end, is_increase = False, True
+        is_Lb = False
         while True:
             for table_id in range(starting_table, 3):
-                index = self.hash_functions(current_key, table_id)
-                if self.tables[table_id][index] is None:
-                    self.tables[table_id][index] = current_key
-                    self.values[table_id][index].add(current_value)
-                    self.num_items += 1
-                    is_end = True
-                    break
+                index = self.hash_functions(current_key[0], table_id)
+                if not is_Lb:
+                    current_value : dict
+                    if self.tables[table_id][index] is None:
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index].add(current_value)
+                        is_Lb = True
+                        self.num_items += 1
+                        is_end = True
+                        break
+                    else:
+                        evicted_key = copy.deepcopy(self.tables[table_id][index])
+                        evicted_value = copy.deepcopy(self.values[table_id][index])
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index].add(current_value)
+                        current_key = evicted_key
+                        path.append(current_key)
+                        if evicted_key[1] == 'stage_3':
+                            current_value = evicted_value
+                            is_end = True
+                            is_increase = False
+                            break
+                        else:
+                            evicted_key[1] = stage_name[stage_name.index(evicted_key[1]) + 1]
+                            current_value = evicted_value
+                            is_Lb = True
                 else:
-                    # 记录置换路径，用于调试
+                    current_value : ListBuffer
                     if current_key in path:
                         is_end = True
                         break
                     # 替换并置换现有键
-                    evicted_key = copy.deepcopy(self.tables[table_id][index])
-                    evicted_value = copy.deepcopy(self.values[table_id][index])
-                    self.tables[table_id][index] = current_key
-                    self.values[table_id][index].add(current_value)
-                    current_key = evicted_key
-                    path.append(current_key)
-                    if evicted_key[1] == 'stage_3':
-                        current_value = evicted_value
-                        starting_table = 0
+                    if self.tables[table_id][index] is None:
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        for element in current_value.buffer:
+                            self.values[table_id][index].add(element)
+                        is_Lb = True
+                        self.num_items += 1
                         is_end = True
-                        is_increase = False
                         break
                     else:
-                        evicted_key[1] = stage_name[stage_name.index(evicted_key[1]) + 1]
-                        current_value = evicted_value
+                        evicted_key = copy.deepcopy(self.tables[table_id][index])
+                        evicted_value = copy.deepcopy(self.values[table_id][index])
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        for element in evicted_value.buffer:
+                            self.values[table_id][index].add(element)
+                        current_key = evicted_key
+                        path.append(current_key)
+                        if evicted_key[1] == 'stage_3':
+                            current_value = evicted_value
+                            is_end = True
+                            is_increase = False
+                            break
+                        else:
+                            evicted_key[1] = stage_name[stage_name.index(evicted_key[1]) + 1]
+                            current_value = evicted_value 
             if is_end:
                 break
-        return is_increase, path
+        return key not in path, path
     def lookup(self, key: dict) -> typing.Tuple[int, ListBuffer]:
         '''
         parameter:
@@ -274,8 +322,8 @@ class CuckooHashTable():
         '''
         for table_id in range(3):
             index = self.hash_functions(key, table_id)
-            if self.tables[table_id][index] is not None and self.tables[table_id][index][0] == key:
-                return table_id, self.values[table_id][index]
+            if self.tables[table_id][index] is not None and match_keys(self.tables[table_id][index][0], key):
+                return table_id, index
         return None, None  # Key not found
     def delete(self, key : dict) -> bool:
         '''
@@ -287,11 +335,8 @@ class CuckooHashTable():
         '''
         for table_id in range(3):
             index = self.hash_functions(key, table_id)
-            if self.tables[table_id][index][0] == True and self.tables[table_id][index] == key:
-                
-                # Remove the key and value
-                # self.values[table_id][index].clear()
-                self.tables[table_id][index] = [False, 'no_stage']
+            if self.tables[table_id][index]is not None and match_keys(self.tables[table_id][index][0], key):
+                self.tables[table_id][index] = None
                 self.num_items -= 1
                 return True
         return False  # Key not found
@@ -302,7 +347,7 @@ class CuckooHashTable():
             for i in range(self.size):
                 if self.tables[table_id][i] is not None:
                     print(f"Index {i}: {self.tables[table_id][i]} -> {self.values[table_id][i]}")
-            print()
+                    print()
             
         
     def stats(self) -> None:
