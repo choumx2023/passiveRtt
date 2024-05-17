@@ -58,3 +58,22 @@ def extract_ip(packet):
         return packet[IPv6].src, packet[IPv6].dst
     else:
         return None, None
+def compare(src_ip, dst_ip):
+    """
+    比较两个IP地址，返回它们的大小关系。
+    
+    :param src_ip: 源IP地址。
+    :param dst_ip: 目标IP地址。
+    :return: 整数，1 表示src_ip > dst_ip，0 表示相等，-1 表示src_ip < dst_ip。
+    """
+    src_str = str(src_ip).split('.')
+    dst_str = str(dst_ip).split('.')
+    for src, dst in zip(src_str, dst_str):
+        if int(src) > int(dst):
+            return 1
+        elif int(src) < int(dst):
+            return -1
+if __name__ == '__main__':
+    # 示例用法
+    key1, key2 = "192.168.1.1", "192.168.1.2"
+    print(compare(key1, key2))  # -1

@@ -1,5 +1,5 @@
 import time
-
+import utils.utils as utils
 class RTTTable:
     '''
     A class to store and calculate RTT samples for IP address pairs.
@@ -12,7 +12,12 @@ class RTTTable:
 
     def _get_ip_pair_key(self, src_ip, dst_ip) -> str:
         """生成IP对的键"""
-        return f"{src_ip}-{dst_ip}"
+        src_str = str(src_ip).split('.')
+        dst_str = str(dst_ip).split('.')
+        for src, dst in zip(src_str, dst_str):
+            if int(src) > int(dst):
+                return f"{src_ip}-{dst_ip}"
+        return f"{dst_ip}-{src_ip}"
     # 接受源IP地址、目标IP地址、RTT值和时间戳作为参数，并将新的RTT样本添加到RTT表中
     def add_rtt_sample(self, src_ip, dst_ip, rtt, timestamp, types = None) -> None:
         """向RTT表中添加一个新的RTT样本"""
