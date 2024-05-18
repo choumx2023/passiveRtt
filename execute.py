@@ -39,3 +39,18 @@ with open('test/icmp_table.txt', 'w') as f:
 with open('test/icmp_rtt_table.txt', 'w') as f:
     sys.stdout = f
     icmp_table.rtt_table.print_rtt()
+import pickle
+
+def save_data_with_pickle(data, filename):
+    with open(filename, 'wb') as file:
+        pickle.dump(data, file)
+
+# 使用这个函数保存RTT表数据
+
+save_data_with_pickle(traffic_table, 'test/icmp_dns_ntp_traffic.pkl')
+save_data_with_pickle(tcp_table, 'test/tcp_traffic.pkl')
+save_data_with_pickle(icmp_table, 'test/icmp_traffic.pkl')
+
+save_data_with_pickle(traffic_table.rtt_table, 'test/icmp_dns_ntp_rtt.pkl')
+save_data_with_pickle(tcp_table.rtt_table, 'test/tcp_rtt.pkl')
+save_data_with_pickle(icmp_table.rtt_table, 'test/icmp_rtt.pkl')

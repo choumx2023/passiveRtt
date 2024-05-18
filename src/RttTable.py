@@ -1,5 +1,7 @@
 import time
 import utils.utils as utils
+import ipaddress
+from scapy.all import IP, IPv6
 class RTTTable:
     '''
     A class to store and calculate RTT samples for IP address pairs.
@@ -11,13 +13,19 @@ class RTTTable:
         self.rtt_samples = {}
 
     def _get_ip_pair_key(self, src_ip, dst_ip) -> str:
-        """生成IP对的键"""
-        src_str = str(src_ip).split('.')
-        dst_str = str(dst_ip).split('.')
-        for src, dst in zip(src_str, dst_str):
-            if int(src) > int(dst):
-                return f"{src_ip}-{dst_ip}"
-        return f"{dst_ip}-{src_ip}"
+        """生成IP对的键，支持IPv4和IPv6"""
+        try:
+            src_ip = ipaddress.ip_address(src_ip)
+            dst_ip = ipaddress.ip_address(dst_ip)
+        except ValueError:
+            raise ValueError("Invalid IP addresses.")
+
+        # 将IP地址转换为统一的二进制形式比较
+        if src_ip > dst_ip:
+            return f"{src_ip}-{dst_ip}"
+        else:
+            return f"{dst_ip}-{src_ip}"
+
     # 接受源IP地址、目标IP地址、RTT值和时间戳作为参数，并将新的RTT样本添加到RTT表中
     def add_rtt_sample(self, src_ip, dst_ip, rtt, timestamp, types = None) -> None:
         """向RTT表中添加一个新的RTT样本"""
@@ -28,16 +36,16 @@ class RTTTable:
 
     def calculate_average_rtt(self, src_ip, dst_ip) -> float:
         """计算指定IP对的平均RTT"""
-        key = (src_ip, dst_ip)
+        key = self._get_ip_pair_key(src_ip, dst_ip)
         if key in self.rtt_samples and len(self.rtt_samples[key]) > 0:
             return sum(self.rtt_samples[key]) / len(self.rtt_samples[key])
         return None
     def calculate_continue_rtt(self, src_ip, dst_ip) -> list:
-        key = (src_ip, dst_ip)
+        key = self._get_ip_pair_key(src_ip, dst_ip)
         if key in self.rtt_samples and len(self.rtt_samples[key]) > 0:
             return self.rtt_samples[key]
         return None
-    def calculate_and_add_rtt(self, src_ip, dst_ip, request_timestamp, response_timestamp) -> None:
+    def calculate_and_add_rtt(self, src_ip, dst_ip, request_timestamp : float, response_timestamp : float) -> None:
         """根据请求和响应的时间戳计算RTT，并添加到表中"""
         rtt = response_timestamp - request_timestamp
         self.add_rtt_sample(src_ip, dst_ip, rtt, response_timestamp)

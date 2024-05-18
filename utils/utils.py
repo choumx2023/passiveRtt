@@ -1,5 +1,6 @@
 from scapy.all import IP, IPv6
-def match_keys(key1, key2):
+import typing
+def match_keys(key1 : dict, key2 : dict) -> bool:
     """
     检查两个键是否匹配。
     
@@ -26,7 +27,7 @@ def match_keys(key1, key2):
             match_reverse = (port1_src == port2_dst and port1_dst == port2_src)
             return match_direct or match_reverse
     return False
-def protocol_to_int(protocol):
+def protocol_to_int(protocol : str) -> int:
     """
     将协议名称转换为整数。
     
@@ -45,7 +46,7 @@ def protocol_to_int(protocol):
         return 123
     else:
         return None
-def extract_ip(packet):
+def extract_ip(packet) -> typing.Tuple[str, str]:
     """
     从数据包中提取源IP地址和目标IP地址。
     
@@ -58,7 +59,7 @@ def extract_ip(packet):
         return packet[IPv6].src, packet[IPv6].dst
     else:
         return None, None
-def compare(src_ip, dst_ip):
+def compare(src_ip : str, dst_ip : str) -> int:
     """
     比较两个IP地址，返回它们的大小关系。
     
@@ -73,7 +74,3 @@ def compare(src_ip, dst_ip):
             return 1
         elif int(src) < int(dst):
             return -1
-if __name__ == '__main__':
-    # 示例用法
-    key1, key2 = "192.168.1.1", "192.168.1.2"
-    print(compare(key1, key2))  # -1
