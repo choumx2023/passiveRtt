@@ -1,5 +1,6 @@
 import time
-import utils.utils as utils
+
+from utils import utils
 import ipaddress
 from scapy.all import IP, IPv6
 class RTTTable:
@@ -11,7 +12,8 @@ class RTTTable:
     def __init__(self):
         # 使用字典存储RTT样本，键为IP地址对，值为包含RTT样本的列表
         self.rtt_samples = {}
-
+        self.max_time = None
+        self.min_time = None
     def _get_ip_pair_key(self, src_ip, dst_ip) -> str:
         """生成IP对的键，支持IPv4和IPv6"""
         try:
@@ -27,12 +29,12 @@ class RTTTable:
             return f"{dst_ip}-{src_ip}"
 
     # 接受源IP地址、目标IP地址、RTT值和时间戳作为参数，并将新的RTT样本添加到RTT表中
-    def add_rtt_sample(self, src_ip, dst_ip, rtt, timestamp, types = None) -> None:
+    def add_rtt_sample(self, src_ip, dst_ip, rtt, timestamp,types = None,  direction ='forward', extra_data = None ) -> None:
         """向RTT表中添加一个新的RTT样本"""
         key = self._get_ip_pair_key(src_ip, dst_ip)
         if key not in self.rtt_samples:
             self.rtt_samples[key] = []
-        self.rtt_samples[key].append({'rtt': rtt, 'timestamp': timestamp, 'types': types})
+        self.rtt_samples[key].append({'rtt': rtt, 'timestamp': timestamp, 'types': types, 'direction': direction, 'extra_data': extra_data})
 
     def calculate_average_rtt(self, src_ip, dst_ip) -> float:
         """计算指定IP对的平均RTT"""
@@ -70,7 +72,22 @@ class RTTTable:
         for key in self.rtt_samples:
             print(key)
             for sample in self.rtt_samples[key]:
-                print(f"RTT: {sample['rtt']} seconds, Timestamp: {sample['timestamp']}, types: {sample['types']}")
+                print(f"RTT: {sample['rtt']} seconds, Timestamp: {sample['timestamp']}, types: {sample['types']}, direction: {sample['direction']}, extra_data: {sample['extra_data']}")
+    def print_tcprtt(self) -> None:
+        for key in self.rtt_samples:
+            print(key)
+            for sample in self.rtt_samples[key]:
+                print(f"RTT: {sample['rtt']} ms, Timestamp: {sample['timestamp']}, types: {sample['types']}, direction: {sample['direction']}")
+    def print_tcptrace(self):
+        for key in self.rtt_samples:
+            print(key, self.rtt_samples[key])  
+    def add_tcptrace_samples(self, src_ip, dst_ip, value: dict, types = None) -> None:
+        """向RTT表中添加一个新的RTT样本"""
+        key = self._get_ip_pair_key(src_ip, dst_ip)
+        if key not in self.rtt_samples:
+            self.rtt_samples[key] = []
+        self.rtt_samples[key].append(value)
+
     '''rtt_table = RTTTable()
 
     # 示例数据包时间戳
@@ -91,13 +108,4 @@ class RTTTable:
                 rtt_list.append(sample['rtt'])
         rtt_list.sort()
         return rtt_list
-    def plot_cdf(self):
-        import matplotlib.pyplot as plt
-        rtt_list = self.calc_rtt_cdf()
-        n = len(rtt_list)
-        y = [(i + 1) / n for i in range(n)]
-        plt.plot(rtt_list, y)
-        plt.xlabel('RTT (seconds)')
-        plt.ylabel('CDF')
-        plt.title('RTT CDF')
-        plt.show()
+        

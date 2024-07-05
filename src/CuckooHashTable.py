@@ -3,6 +3,8 @@ import os
 import sys
 import copy
 import typing
+import random
+from decimal import Decimal
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.utils import match_keys, protocol_to_int
 
@@ -51,16 +53,17 @@ class ListBuffer:
 
         if is_add:
             self.add(copy.deepcopy(new_element))  # 如果is_add为真，则添加新元素
-            print('add new element', new_element)
-        if first_matched_value is not None and new_element['timestamp'] - first_matched_value['timestamp'] > 1 - 1e-3:
+            #print('add new element', new_element)
+        if (first_matched_value is None) or (new_element['timestamp'] - first_matched_value['timestamp'] > 1 - 1e-3):
             return None
         
         return first_matched_value
+    
     # typical back-to-back TCP packets
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
     # 3. S->C: seq = y, ack = x+50
-    def process_normal_tcp_element(self, new_element : list, is_add : bool) -> list:
+    def process_normal_tcp_element(self, new_element : list, is_add : bool) -> typing.Union[list, bool]:
         '''
         parameters:
             new_element: value
@@ -70,30 +73,45 @@ class ListBuffer:
         '''
         first_match_value = None
         new_ack = new_element['ack']
+        # 假设背靠背的TCP包全部是相同的ACK
+        old_ack = -1
         i = len(self.buffer) - 1
         count = 0
+        PSH_flag = False
         while i >= 0:
-            current_element = self.buffer[i]
-            if current_element['ack'] < new_element['seq']:
-                break
-            elif current_element['seq'] == new_ack:
-                if first_match_value is None:
-                    first_match_value = copy.deepcopy(current_element)
-                    count += 1
-                else:
-                    # 如果不止发送了一个packet，要保留两个
-                    if abs(first_match_value['timestamp'] - new_element['timestamp']) < 1e-3 and count == 1:
+            current_element = self.buffer[i]# 考虑之前的包
+            maxium_length = -1
+            if new_element['direction'] != current_element['direction']: # 不同方向
+                if current_element['ack'] < new_element['seq']:# 过早的数据包
+                    self.buffer.pop(i)# 过期的不留
+                elif current_element['ack'] == new_element['seq'] and current_element['seq'] == new_element['ack'] :
+                    if 'PSH' in current_element and current_element['PSH'] == 1:
+                        PSH_flag = True
+                    if first_match_value is None:
+                        first_match_value = copy.deepcopy(current_element)
+                        maxium_length = first_match_value['length']
                         count += 1
-                    # 如果连续发送不少于三个，删掉前n-2个
-                    else:
-                        self.buffer.pop(i)
-                        i -= 1
+                    else:# 验证是不是有两个及以上的包
+                        # 如果不止发送了一个packet，要保留两个
+                        if abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= maxium_length and current_element['length'] > 1000:
+                            maxium_length = current_element['length']
+                            count += 1
+                            self.buffer.pop(i)
+                        # 如果连续发送不少于三个，删掉前n-2个
+                        else :
+                            self.buffer.pop(i)
+            if new_element['direction'] == current_element['direction']:#相同方向
+                if current_element['ack'] == new_ack:
+                    count = 0
+                    break
             i -= 1
         if is_add:
             self.add(copy.deepcopy(new_element))
-        if first_match_value is not None and new_element['timestamp'] - first_match_value['timestamp'] > 1 - 1e-3:
-            return None
-        return first_match_value
+        if first_match_value is None or new_element['timestamp'] - first_match_value['timestamp'] > 1 - 1e-3:
+            return None, None
+        if not PSH_flag:# 没有psh。也没有back-to-back
+            return None, None
+        return first_match_value, count >= 2 
                         
             
     def print_lb(self):
@@ -103,6 +121,32 @@ class ListBuffer:
         return f"ListBuffer(size={self.size}, buffer={self.buffer})"
     def __repr__(self) -> str:
         return self.__str__()
+    
+    
+
+def random_compare_listbuffer(l1 : ListBuffer | dict, l2 : ListBuffer) -> bool:
+    '''
+    
+    '''
+    timestamp = max(l1.buffer[-1]['timestamp'], l2.buffer[-1]['timestamp'])
+    if isinstance(l1, dict):
+        weight1 = 25
+    else:
+        weight1 = calc_listbuffer_weight(l1, timestamp)
+    weight2 = calc_listbuffer_weight(l2, timestamp)
+    if random.random() < weight1 / (weight1 + weight2):
+        return True
+    else:
+        return False
+def calc_listbuffer_weight(l1, timestamp) -> int:
+    # 计算ListBuffer的权重, 返回listbuffer中距离timestamp不超过20的元素的个数
+    count = 0
+    for i in range(len(l1)):
+        if abs(l1[i] - timestamp) <= 20:
+            count += 1
+    return count
+
+
 class CuckooHashTable():
     '''
     key: a dictionary containing the keys to be inserted,
@@ -259,7 +303,9 @@ class CuckooHashTable():
                         self.num_items += 1
                         is_end = True
                         break
-                    else:
+                    else:# random replace
+                        # 此处增加随机替换的判定条件 如果满足就替换
+                        
                         evicted_key = copy.deepcopy(self.tables[table_id][index])
                         evicted_value = copy.deepcopy(self.values[table_id][index])
                         self.tables[table_id][index] = current_key

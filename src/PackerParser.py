@@ -1,9 +1,20 @@
 from scapy.all import IP, ICMP, UDP, DNS, NTP, TCP
+from scapy.layers.inet6 import ICMPv6EchoRequest, ICMPv6EchoReply, IPv6
+from typing import Union, List
 from .CuckooHashTable import CuckooHashTable, ListBuffer
 from .RttTable import RTTTable
 from utils.utils import extract_ip
 import time
+import ipaddress
 # CuckooHashTable key要求是字典
+def ip_compare(src_ip, dst_ip):
+    ip1 = ipaddress.ip_address(src_ip)
+    ip2 = ipaddress.ip_address(dst_ip)
+    
+    if ip1 > ip2:
+        return (src_ip, dst_ip)
+    else:
+        return (dst_ip, src_ip)
 class NetworkTrafficTable(CuckooHashTable):
     '''
     A table to store network traffic data, including ICMP, DNS, and NTP packets.
@@ -32,9 +43,71 @@ class NetworkTrafficTable(CuckooHashTable):
             self.process_ntp_packet(packet)
         else:
             pass
-
     def process_icmp_packet(self, packet):
+        src_ip, dst_ip = extract_ip(packet)
+        timestamp = packet.time
+        
+        # 确定是 ICMP 还是 ICMPv6，并提取相应的字段
+        if ICMP in packet:
+            icmp_id = packet[ICMP].id
+            icmp_seq = packet[ICMP].seq
+            icmp_type = packet[ICMP].type  # 8为请求，0为响应
+            protocol = 'ICMP'
+        elif IPv6 in packet and (ICMPv6EchoRequest in packet or ICMPv6EchoReply in packet):
+            if ICMPv6EchoRequest in packet:
+                icmp_id = packet[ICMPv6EchoRequest].id
+                icmp_seq = packet[ICMPv6EchoRequest].seq
+                icmp_type = 128  # Echo Request (ICMPv6 type 128)
+            elif ICMPv6EchoReply in packet:
+                icmp_id = packet[ICMPv6EchoReply].id
+                icmp_seq = packet[ICMPv6EchoReply].seq
+                icmp_type = 129  # Echo Reply (ICMPv6 type 129)
+            protocol = 'ICMPv6'
+            print("find ICMPv6!")
+        else:
+            return  # 不是我们感兴趣的包
+        
+        key = {'ip': (src_ip, dst_ip), 'protocol': protocol}
+        value = {'timestamp': timestamp, 'type': icmp_type, 'seq': icmp_seq, 'id': icmp_id}
+
+        if icmp_type not in [0, 8, 128, 129]:
+            return  # 只处理请求和响应报文
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': protocol}
+        table_num, index = self.lookup(key_temp)
+        if table_num is None:
+            self.insert(key_temp)
+        table_num, index = self.lookup(key)
+        target_values = None
+        if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
+            if icmp_type in [8, 128]:  # ICMP或ICMPv6请求
+                # 直接插入，等待响应
+                target_values = self.values[table_num][index]
+                condition1 = lambda x, y: False
+                condition2 = lambda x, y: True
+                target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
+            elif icmp_type in [0, 129]:  # ICMP或ICMPv6响应
+                # 尝试找到匹配的请求
+                target_values = self.values[table_num][index]
+                condition1 = lambda x, y: x['type'] in [8, 128] and x['seq'] == y['seq'] and x['id'] == y['id']
+                condition2 = lambda x, y: False
+                prior_value = target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
+                if prior_value is not None:
+                    request_timestamp = prior_value['timestamp']
+                    rtt = timestamp - request_timestamp
+                    # 更新RTT表
+                    if self.rtt_table:
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, direction=value['direction'], types = protocol)
+    '''
+    def process_icmp_packet(self, packet: Union[ICMP, ICMPv6EchoRequest, ICMPv6EchoReply]):
         """处理ICMP数据包，尝试匹配请求和响应，然后更新RTT表"""
+
+
 
         src_ip, dst_ip = extract_ip(packet)
         icmp_id = packet[ICMP].id
@@ -52,32 +125,37 @@ class NetworkTrafficTable(CuckooHashTable):
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if icmp_type == 8:  # ICMP请求
                 # 直接插入，等待响应
                 target_values = self.values[table_num][index]
-                
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
                 target_values.process_element( new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
             elif icmp_type == 0:  # ICMP响应
                 # 尝试找到匹配的请求
-                print(key)
-                print(value)
+                #print(key)
+                #print(value)
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: x['type'] == 8 and x['seq'] == y['seq']
                 condition2 = lambda x, y: False
                 prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
-                    print(f"prior_value: {prior_value}")
+                    #print(f"prior_value: {prior_value}")
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'ICMP')
-                        print(f"RTT: {rtt}")
+                        #print(f"RTT: {rtt}")
                 # 可选择删除请求记录或保留以支持多次测量
                 # self.delete(key)
-
+'''
     def process_dns_packet(self, packet):
         src_ip, dst_ip = extract_ip(packet)
         dst_port = packet[UDP].dport
@@ -87,13 +165,21 @@ class NetworkTrafficTable(CuckooHashTable):
 
         timestamp = packet.time
         key = {'ip':(src_ip, dst_ip),'port':(src_port, dst_port), 'protocol': 'DNS'}
-        value = {'timestamp': timestamp, 'dns_id': dns_id, 'is_qr': qr}
-        table_num, index = self.lookup(key)
+        value = {'timestamp': timestamp, 'dns_id': dns_id, 'is_qr': qr, 'dns_details':[packet[DNS].qdcount, packet[DNS].ancount, packet[DNS].nscount, packet[DNS].arcount]}
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'DNS', 'port': (src_port, dst_port)}
+        
+        table_num, index = self.lookup(key_temp)
         if table_num is None:
-            self.insert(key)
+            self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if qr == 0:  # Query
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
@@ -103,14 +189,14 @@ class NetworkTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['dns_id'] == new_item['dns_id'] and existing_item['is_qr'] == 0 and new_item['is_qr'] == 1
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = False)
                 if prior_value is not None:
                     # find the matching request and calculate RTT
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp          
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'DNS')
-                        print(f"RTT: {rtt}")
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'DNS', direction=value['direction'], extra_data=[value['dns_details'], prior_value['dns_details']])
+                        #print(f"RTT: {rtt}")
                     #self.delete(request_key)                    
 
     def process_ntp_packet(self, packet: NTP):
@@ -125,12 +211,19 @@ class NetworkTrafficTable(CuckooHashTable):
         ref_timestamp = packet[NTP].ref
         key = {'ip':(src_ip, dst_ip),'port':(src_port, dst_port), 'protocol': 'NTP'}
         value = {'timestamp': timestamp, 'mode': ntp_mode, 'orig': orig_timestamp, 'ref': ref_timestamp, 'recv': recv_timestamp, 'sent': sent_timestamp}
-        table_num, index = self.lookup(key)
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'NTP', 'port': (src_port, dst_port)}
+        table_num, index = self.lookup(key_temp)
         if table_num is None:
-            self.insert(key)
+            self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if ntp_mode == 3:
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
@@ -140,14 +233,14 @@ class NetworkTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['mode'] == 3 and new_item['mode'] == 4 and new_item['ref'] == existing_item['orig']
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = False)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'NTP')
-                        print(f"RTT: {rtt}")
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'NTP', direction=value['direction'])
+                        #print(f"RTT: {rtt}")
                 #self.delete(request_key)
 
     def process_udp_packet(self, packet):
@@ -171,11 +264,14 @@ class TCPTrafficTable(CuckooHashTable):
         if TCP in packet:
             tcp_flags = packet[TCP].flags
             syn_flag = (tcp_flags & 0x2) >> 1
+            psh_flag = (tcp_flags & 0x8) >> 3
             ts_val, _ = self.extract_tcp_options(packet)
             if syn_flag:
                 self.process_syn_packet(packet)
             elif ts_val is not None:
                 self.process_timestamp_packet(packet)
+            elif psh_flag:
+                self.process_normal_packet(packet, "PSH")
             else:
                 self.process_normal_packet(packet)
             # 尝试找到匹配的数据包并计算RTT
@@ -192,21 +288,30 @@ class TCPTrafficTable(CuckooHashTable):
     # 处理SYN数据包
     def process_syn_packet(self, packet):
         src_ip, dst_ip = extract_ip(packet)
+        src_port, dst_port = packet[TCP].sport, packet[TCP].dport
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) >> 4
         timestamp = packet.time
-        key ={'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
-        value = {'timestamp': packet.time, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'SYN':1, 'ACK': ack_flag}
-        table_num, index = self.lookup(key)
+        length = len(packet)
+        key ={'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (src_port, dst_port)}
+        value = {'timestamp': packet.time, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'SYN':1, 'ACK': ack_flag, 'length': length}
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (src_port, dst_port)}
+        table_num, index = self.lookup(key_temp)
         if table_num is None:
-            self.insert(key)
+            self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
             # ACK & SYN
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if ack_flag:
                 target_values = self.values[table_num][index]
-                condition1 = lambda existing_item, new_item: existing_item['SYN'] == 1 and existing_item['ACK'] == 0 and existing_item['seq'] == new_item['ack'] - 1
+                condition1 = lambda existing_item, new_item: existing_item['SYN'] == 1 and existing_item['ACK'] == 0 and existing_item['seq'] == new_item['ack'] - 1 and existing_item['direction'] != new_item['direction']
                 condition2 = lambda existing_item, new_item: False
                 prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
@@ -214,7 +319,7 @@ class TCPTrafficTable(CuckooHashTable):
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'SYN')
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'SYN', direction=value['direction'])
             # SYN
             else:   
                 target_values = self.values[table_num][index]
@@ -230,51 +335,116 @@ class TCPTrafficTable(CuckooHashTable):
         ts_val, ts_ecr = self.extract_tcp_options(packet)
         timestamp = packet.time
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr}
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+        table_num, index = self.lookup(key_temp)
+        if table_num is None:
+            self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
-        if table_num is None:
-            self.insert(key)
-        table_num, index = self.lookup(key)
         if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if ack_flag:
                 target_values = self.values[table_num][index]
-                condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item.get('ts_val') == new_item.get('ts_val') and existing_item.get('ts_ecr') == new_item.get('ts_ecr')
+                condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = False)
+                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Timestamp')
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Timestamp', direction=value['direction'])
             else:   
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
                 target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
-    # 处理普通数据包
-    def process_normal_packet(self, packet):
+    def process_reset_packet(self, packet, additional_info = None):
         src_ip, dst_ip = extract_ip(packet)
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) >> 4
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         timestamp = packet.time
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'length': len(packet), 'ACK': ack_flag, 'SYN': 0}
-        table_num, index = self.lookup(key)
+        if additional_info == 'PSH':
+            PSH_flag = 1
+            value['PSH'] = PSH_flag
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+        table_num, index = self.lookup(key_temp)
         if table_num is None:
-            self.insert(key)
+            self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
             if ack_flag:
                 target_values = self.values[table_num][index]
-                prior_value = target_values.process_normal_tcp_element(new_element = value, is_add = True)
+                prior_value, b2b_flag = target_values.process_normal_tcp_element(new_element = value, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
+                    
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Normal')
+                        if not b2b_flag:
+                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'PSH', direction=value['direction'])
+                        else:
+                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Normal', direction=value['direction'])
+            else:   
+                target_values = self.values[table_num][index]
+                condition1 = lambda x, y: False
+                condition2 = lambda x, y: True
+                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+    
+                
+    # 处理普通数据包
+    def process_normal_packet(self, packet, additional_info = None):
+        
+        src_ip, dst_ip = extract_ip(packet)
+        tcp_flags = packet[TCP].flags
+        ack_flag = (tcp_flags & 0x10) >> 4
+        key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+        timestamp = packet.time
+        value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'length': len(packet), 'ACK': ack_flag, 'SYN': 0}
+        if additional_info == 'PSH':
+            PSH_flag = 1
+            value['PSH'] = PSH_flag
+        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+        table_num, index = self.lookup(key_temp)
+        if table_num is None:
+            self.insert(key_temp)
+        table_num, index = self.lookup(key)
+        target_values : ListBuffer
+        if table_num is not None:
+            index = self.hash_functions(key, table_num)
+            target_key = self.tables[table_num][index][0]
+            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+                value['direction'] = 'forward'
+            else:
+                value['direction'] = 'backward'
+            if ack_flag:
+                target_values = self.values[table_num][index]
+                prior_value, b2b_flag = target_values.process_normal_tcp_element(new_element = value, is_add = True)
+                if prior_value is not None:
+                    request_timestamp = prior_value['timestamp']
+                    rtt = timestamp - request_timestamp
+                    # 更新RTT表
+                    
+                    if self.rtt_table:
+                        if not b2b_flag:
+                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'PSH', direction=value['direction'])
+                        else:
+                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, rtt, timestamp, 'Normal', direction=value['direction'])
             else:   
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False

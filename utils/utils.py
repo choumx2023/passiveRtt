@@ -1,5 +1,7 @@
 from scapy.all import IP, IPv6
 import typing
+import random
+from decimal import Decimal
 def match_keys(key1 : dict, key2 : dict) -> bool:
     """
     检查两个键是否匹配。
@@ -74,3 +76,5 @@ def compare(src_ip : str, dst_ip : str) -> int:
             return 1
         elif int(src) < int(dst):
             return -1
+
+    

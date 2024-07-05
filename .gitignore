@@ -1,0 +1,14 @@
+*.txt
+*.pcap
+*.pkl
+*.png
+.venv
+output/
+current/
+src/__pycache__/
+test/
+utils/__pycache__/
+.DS_Store
+.vscode/
+misc/
+docs/
