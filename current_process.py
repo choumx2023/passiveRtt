@@ -6,6 +6,30 @@ from scapy.all import rdpcap
 from src.PackerParser import NetworkTrafficTable, TCPTrafficTable
 from scapy.all import TCP, ICMP, DNS, NTP
 from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6EchoReply
+from src.Monitor import NetworkTrafficMonitor
+import logging
+def setup_logging(name='network_monitor'):
+    '''
+    params:
+        name (str): The name of the logger.
+    设置日志记录器。
+    '''
+    log_directory = "./logs"
+    log_path = os.path.join(log_directory, f"{name}.log")
+    print(log_path)
+    if not os.path.exists(log_directory):
+        os.makedirs(log_directory)
+
+    logging.basicConfig(
+        filename=log_path,
+        filemode='a',
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    logger = logging.getLogger(name)
+    return logger
 
 def save_data_with_pickle(data, filename):
     with open(filename, 'wb') as file:
@@ -13,10 +37,11 @@ def save_data_with_pickle(data, filename):
 
 def main(pcap_file, output_dir):
     packets = rdpcap(pcap_file)
-
-    traffic_table = NetworkTrafficTable() 
-    tcp_table = TCPTrafficTable()
-    icmp_table = NetworkTrafficTable()
+    logger = setup_logging('current')
+    monitor = NetworkTrafficMonitor(name='current', check_anomalies=True, logger=logger)
+    traffic_table = NetworkTrafficTable(monitor=monitor) 
+    tcp_table = TCPTrafficTable(monitor=monitor)
+    icmp_table = NetworkTrafficTable(monitor=monitor)
     count = 0
 
     for packet in packets:
@@ -60,12 +85,14 @@ def main(pcap_file, output_dir):
     save_data_with_pickle(traffic_table.rtt_table, os.path.join(output_dir, 'icmp_dns_ntp_rtt.pkl'))
     save_data_with_pickle(tcp_table.rtt_table, os.path.join(output_dir, 'tcp_rtt.pkl'))
     save_data_with_pickle(icmp_table.rtt_table, os.path.join(output_dir, 'icmp_rtt.pkl'))
-
+    save_data_with_pickle(monitor, os.path.join(output_dir, 'current_monitor.pkl'))
+    
+    traffic_table.net_monitor.print_trees()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process a pcap file and generate traffic and RTT tables.')
     parser.add_argument('pcap_file', type=str, help='Path to the input pcap file')
     parser.add_argument('output_dir', type=str, help='Directory to save the output files')
     args = parser.parse_args()
-
     main(args.pcap_file, args.output_dir)
 #python3 current_process.py ./test/test2.pcap ./data/rtt5
+#python3 current_process.py ./test/test4.pcap ./data/rtt4

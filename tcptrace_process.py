@@ -6,24 +6,25 @@ import sys
 import pickle
 import ipaddress
 from src.RttTable import RTTTable
-
+from src.Monitor import NetworkTrafficMonitor
+import logging
 def convert_to_decimal(timestamp_str):
-    # Use regex to clean up the timestamp string
-    match = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})", timestamp_str)
+    # 修改正则表达式以匹配新的时间格式
+    pattern = r"(\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2}\.\d{6} \d{4})"
+    match = re.match(pattern, timestamp_str)
     if match:
         cleaned_timestamp_str = match.group(1)
     else:
         raise ValueError("Invalid timestamp format")
 
-    # Convert string to datetime object
-    dt = datetime.strptime(cleaned_timestamp_str, "%Y-%m-%d %H:%M:%S.%f")
+    # 使用正确的格式解析时间字符串
+    dt = datetime.strptime(cleaned_timestamp_str, "%a %b %d %H:%M:%S.%f %Y")
 
-    # Convert datetime object to Unix timestamp
+    # 将 datetime 对象转换为 Unix 时间戳
     unix_timestamp = time.mktime(dt.timetuple())
 
-    # Convert Unix timestamp to decimal format, including microseconds
+    # 添加微秒部分，转换为十进制形式的时间戳
     decimal_timestamp = unix_timestamp + dt.microsecond / 1e6
-
     return decimal_timestamp
 
 def save_data_with_pickle(data, filename):
@@ -74,12 +75,35 @@ def extract_rtt(file_name):
             connection = {}
 
     return connections
+def setup_logging(name='network_monitor'):
+    '''
+    params:
+        name (str): The name of the logger.
+    设置日志记录器。
+    '''
+    log_directory = "./logs"
+    log_path = os.path.join(log_directory, f"{name}.log")
+    print(log_path)
+    if not os.path.exists(log_directory):
+        os.makedirs(log_directory)
 
+    logging.basicConfig(
+        filename=log_path,
+        filemode='a',
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    logger = logging.getLogger(name)
+    return logger
 def main(dir_path, output_dir):
     count = 0
     tcptrace_table = RTTTable()
-
-    for filename in os.listdir(dir_path):
+    logger = setup_logging('tcptrace')
+    tcptrace_monitor = NetworkTrafficMonitor(name='tcptrace', check_anomalies=False, logger=logger)
+    filenames = sorted(os.listdir(dir_path))
+    for filename in filenames:
         min_time = -1
         max_time = 0
         if not os.path.exists(output_dir):
@@ -103,19 +127,23 @@ def main(dir_path, output_dir):
                 if connection['rtt_samples'][0] != 0:
                     value1 = {'rtt': connection['rtt_min'][0], 'timestamp': connection['last_packet'], 'types': 'tcptrace'}
                     tcptrace_table.add_rtt_sample(src_ip=src_ip, dst_ip=dst_ip, rtt= value1['rtt'], timestamp=value1['timestamp'], types='tcptrace', direction=dir)
+                    tcptrace_monitor.add_or_update_ip_with_rtt(dst_ip if dir == 'forward' else src_ip, 'TCP', 'tcptrace', value1['rtt'], timestamp=value1['timestamp'])
                 if connection['rtt_samples'][1] != 0:
                     value2 = {'rtt': connection['rtt_min'][1], 'timestamp': connection['last_packet'], 'types': 'tcptrace'}
                     tcptrace_table.add_rtt_sample(src_ip=src_ip, dst_ip=dst_ip, rtt= value2['rtt'], timestamp=value2['timestamp'], types='tcptrace', direction=reversed_dir)
+                    tcptrace_monitor.add_or_update_ip_with_rtt(src_ip if reversed_dir == 'backward' else dst_ip, 'TCP', 'tcptrace', value2['rtt'],timestamp=value2['timestamp'])
                 tcptrace_table.max_time = max_time
                 tcptrace_table.min_time = min_time
+                
                 # 比较这些连接在规定时间内，测量结果/baseline/tcptrace之间的差异
         else:
             continue
     save_data_with_pickle(tcptrace_table, os.path.join(output_dir, 'new_tcptrace.pkl'))
+    save_data_with_pickle(tcptrace_monitor, os.path.join(output_dir, 'new_tcptrace_monitor.pkl'))
     with open(os.path.join(output_dir, 'new_tcptrace.txt'), 'w') as file:
         sys.stdout = file
         tcptrace_table.print_tcprtt()
-
+        tcptrace_monitor.print_trees()
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python script.py <input_directory> <output_directory>")

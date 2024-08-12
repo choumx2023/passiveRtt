@@ -122,7 +122,7 @@ class RelayAnalysis:
         with open (output_dir + 'tcptrace_rtt.txt', 'w') as file:
             for key in self.tcptrace_rtt:
                 print(key, self.tcptrace_rtt[key], end='\n', file=file)
-    def calculate_average_rtt(self, rtt_data, timeslot_size, is_outlier = False):
+    def calculate_average_rtt(self, rtt_data, timeslot_size, nihe= False, is_outlier = False):
         """
         计算指定 RTT 数据中每个 IP 的平均 RTT，按时间槽分组。
 
@@ -147,7 +147,7 @@ class RelayAnalysis:
                 for timeslot, rtts in timeslots.items():
                     average_rtt = sum(rtts) / len(rtts) if rtts else None
                     average_rtt_per_timeslot[timeslot] = average_rtt
-                average_rtt_per_ip_timeslot[ip] = average_rtt_per_timeslot
+                average_rtt_per_ip_timeslot[ip] = average_rtt_per_timeslot             
             return average_rtt_per_ip_timeslot, rtt_by_timeslot
         else:
             rtt_by_timeslot = {}

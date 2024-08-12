@@ -64,9 +64,9 @@ echo "All files have been analyzed."
 
 python3.12 tcptrace_process.py "$output_dir2" "$output_directory" # 在output_directory中生成一个关键的pkl文件
 echo 'tcp process done'
-python3 current_process.py "$input_file" "$output_data_dir" # 在output_data_dir中生成一个关键的pkl文件
-echo 'current process done'
-python3 ./analysis/rtt_relay.py "$output_data_dir"  "$output_directory" "$final_result" --timeslot="$time_slot" # 需要先读取output_data_dir中的pkl文件，然后读取
-echo 'rtt_relay done'
-rm -rf "$output_dir"
-rm -rf "$output_dir2"
+#python3 current_process.py "$input_file" "$output_data_dir" # 在output_data_dir中生成一个关键的pkl文件
+#echo 'current process done'
+# python3 ./analysis/rtt_relay.py "$output_data_dir"  "$output_directory" "$final_result" --timeslot="$time_slot" # 需要先读取output_data_dir中的pkl文件，然后读取
+#echo 'rtt_relay done'
+#rm -rf "$output_dir"
+#rm -rf "$output_dir2"
