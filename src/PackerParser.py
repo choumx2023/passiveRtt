@@ -29,6 +29,12 @@ class NetworkTrafficTable(CuckooHashTable):
         self.max_rehash_attempts = 5
     '''
     def __init__(self, monitor : NetworkTrafficMonitor = NetworkTrafficMonitor(), initial_size=10013):
+        '''
+        params:
+            initial_size (int): The initial size of the hash table.
+            monitor (NetworkTrafficMonitor): The monitor instance to record network activities.
+            initial_size (int): 哈希表的初始大小。
+        '''
         super().__init__(initial_size, buffersize = 50)
         self.rtt_table = RTTTable()
         self.size : int
@@ -36,6 +42,15 @@ class NetworkTrafficTable(CuckooHashTable):
         self.tables : list[list[bool, str]]
         self.values : list[list[ListBuffer]]
         self.net_monitor = monitor
+    
+    def replace_monitor(self, monitor : NetworkTrafficMonitor):
+        '''
+        To decrease the complexity of the append function, we update the summary monitor and replace the monitor.
+        params:
+            monitor (NetworkTrafficMonitor): The new monitor instance to replace the old one.
+        '''
+        self.net_monitor = monitor
+        
     def add_packet(self, packet):
         if ICMP in packet:
             self.process_icmp_packet(packet)
@@ -46,6 +61,16 @@ class NetworkTrafficTable(CuckooHashTable):
         else:
             pass
     def process_icmp_packet(self, packet):
+        '''
+        This function processes ICMP packets, tries to match requests and responses, and then updates the RTT table.
+        params:
+            packet (Union[ICMP, ICMPv6EchoRequest, ICMPv6EchoReply]): The ICMP packet to process.
+        function:
+            for RttTable:
+                add_rtt_sample
+            for NetworkTrafficMonitor:
+                add_ip_and_record_activity
+        '''
         src_ip, dst_ip = extract_ip(packet)
         timestamp = packet.time
         # 确定是 ICMP 还是 ICMPv6，并提取相应的字段
@@ -166,6 +191,11 @@ class NetworkTrafficTable(CuckooHashTable):
                 # self.delete(key)
 '''
     def process_dns_packet(self, packet):
+        '''
+        This function processes DNS packets, tries to match requests and responses, and then updates the RTT table.
+        params:
+            packet (DNS): The DNS packet to process.
+        '''
         src_ip, dst_ip = extract_ip(packet)
         dst_port = packet[UDP].dport
         src_port = packet[UDP].sport
@@ -271,8 +301,14 @@ class NetworkTrafficTable(CuckooHashTable):
         return rtt
 
 class TCPTrafficTable(CuckooHashTable):
+    '''
+    This class is used to store TCP traffic data, including SYN, SYN-ACK, and PSH packets.
+    '''
     def __init__(self, monitor : NetworkTrafficMonitor, initial_size=1019, rtt_table=None):
-        super().__init__(initial_size)
+        '''
+        This function initializes the TCPTrafficTable, add the monitor instance, and the RTT table instance.
+        '''
+        super().__init__()
         self.rtt_table = rtt_table or RTTTable()  # RTT表实例，用于存储RTT计算结果
         self.tables : list[list[bool, str]]
         self.values : list[list[ListBuffer]]
@@ -294,7 +330,14 @@ class TCPTrafficTable(CuckooHashTable):
             # 尝试找到匹配的数据包并计算RTT
             
     def extract_tcp_options(self, packet):
-        """从TCP数据包中提取选项，特别是Timestamp"""
+        '''
+        This function extracts the TCP options from the packet. If the packet contains the Timestamp option, it returns the timestamp value and echo reply.
+        params:
+            packet (TCP): The TCP packet to extract the options from.
+        returns:
+            ts_val (int): The timestamp value.
+            ts_ecr (int): The timestamp echo reply.
+        '''
         ts_val, ts_ecr = None, None
         if TCP in packet:
             for option in packet[TCP].options:
@@ -304,6 +347,18 @@ class TCPTrafficTable(CuckooHashTable):
         return ts_val, ts_ecr
     # 处理SYN数据包
     def process_syn_packet(self, packet):
+        '''
+        This function processes SYN packets, tries to match requests and responses, and then updates the RTT table.
+        params:
+            packet (TCP): The TCP packet to process.
+        returns:
+            None
+        function:
+            for RttTable:
+                add_rtt_sample
+            for NetworkTrafficMonitor:
+                add_ip_and_record_activity
+        '''
         src_ip, dst_ip = extract_ip(packet)     
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) != 0
@@ -363,6 +418,18 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     # 处理Timestamp数据包
     def process_timestamp_packet(self, packet):
+        '''
+        This function processes Timestamp packets, tries to match requests and responses, and then updates the RTT table.
+        params:
+            packet (TCP): The TCP packet to process.
+        returns:
+            None
+        function:
+            for RttTable:
+                add_rtt_sample
+            for NetworkTrafficMonitor:
+                add_ip_and_record_activity
+        '''
         src_ip, dst_ip = extract_ip(packet)
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) != 0
@@ -421,6 +488,17 @@ class TCPTrafficTable(CuckooHashTable):
                 condition2 = lambda x, y: True
                 target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     def process_reset_packet(self, packet, additional_info = None):
+        '''
+        This function is used to process the reset packet.
+        params:
+            packet (scapy.Packet): The packet to be processed.
+            additional_info (str): The additional information to be processed.
+        return:
+            None
+        function:
+            for NetworkTrafficMonitor:
+                add_ip_and_record_activity
+        '''
         src_ip, dst_ip = extract_ip(packet)
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) != 0
@@ -490,6 +568,19 @@ class TCPTrafficTable(CuckooHashTable):
                 
     # 处理普通数据包
     def process_normal_packet(self, packet, additional_info=None):
+        '''
+        This function is used to process the normal TCP packet.
+        params:
+            packet (scapy.Packet): The packet to be processed.
+            additional_info (str): The additional information to be processed.
+        return:
+            None
+        function:
+            for NetworkTrafficMonitor:
+                add_ip_and_record_activity
+            for RTTTable:
+                add_rtt_sample
+        '''
         src_ip, dst_ip = extract_ip(packet)
         tcp_flags = packet[TCP].flags
         ack_flag = (tcp_flags & 0x10) != 0

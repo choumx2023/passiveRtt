@@ -1,4 +1,5 @@
 import argparse
+import time
 import os
 import sys
 import pickle
@@ -6,7 +7,7 @@ from scapy.all import rdpcap
 from src.PackerParser import NetworkTrafficTable, TCPTrafficTable
 from scapy.all import TCP, ICMP, DNS, NTP
 from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6EchoReply
-from src.Monitor import NetworkTrafficMonitor
+from src.Monitor import NetworkTrafficMonitor, CompressedIPNode, CompressedIPTrie
 import logging
 def setup_logging(name='network_monitor'):
     '''
@@ -34,7 +35,37 @@ def setup_logging(name='network_monitor'):
 def save_data_with_pickle(data, filename):
     with open(filename, 'wb') as file:
         pickle.dump(data, file)
+def load_data_with_pickle(filename):
+    with open(filename, 'rb') as file:
+        data = pickle.load(file)
+    return data
+def merge_monitors(file_list, output_dir):
+    if len(file_list) == 1:
+        # 只有一个文件，直接返回这个监控器
+        final_monitor = load_data_with_pickle(file_list[0])
+        final_filename = os.path.join(output_dir, 'final_summary_monitor.pkl')
+        save_data_with_pickle(final_monitor, final_filename)
+        return final_monitor
+    time1 = time.time()
+    # 两两合并
+    new_file_list = []
+    for i in range(0, len(file_list), 2):
+        if i + 1 < len(file_list):
+            time1 = time.time()
+            monitor1 = load_data_with_pickle(file_list[i])
+            monitor2 = load_data_with_pickle(file_list[i + 1])
+            monitor1.merge_monitor(monitor2)
+            new_filename = os.path.join(output_dir, f'merged_monitor_{i//2}.pkl')
+            save_data_with_pickle(monitor1, new_filename)
+            new_file_list.append(new_filename)
+            time2 = time.time()
+            print(f'Merged {file_list[i]} and {file_list[i + 1]}, time: {time2 - time1}s')
+        else:
+            # 如果是奇数个，直接把最后一个加到新列表中
+            new_file_list.append(file_list[i])
 
+    # 递归继续合并
+    return merge_monitors(new_file_list, output_dir)
 def main(pcap_file, output_dir):
     packets = rdpcap(pcap_file)
     logger = setup_logging('current')
@@ -43,8 +74,10 @@ def main(pcap_file, output_dir):
     tcp_table = TCPTrafficTable(monitor=monitor)
     icmp_table = NetworkTrafficTable(monitor=monitor)
     count = 0
-
+    time1 = time.time()
+    part_number = 0
     for packet in packets:
+        
         count += 1
         if ICMP in packet:
             icmp_table.add_packet(packet)
@@ -56,10 +89,37 @@ def main(pcap_file, output_dir):
             tcp_table.add_packet(packet)
 
         if count % 10000 == 0:
-            print(f'Processed {count} packets')
-
+            time2 = time.time()
+            print(f'Processed {count} packets, time: {time2 - time1}s')
+            time1 = time2
+        if count % 100000 == 0:
+            part_number += 1
+            # traffic_table.print_tables()
+            # tcp_table.print_tables()
+            # icmp_table.print_tables()
+            # merge the current monitor into the summary monitor
+            time3 = time.time()
+            # create a new monitor for the next batch of packets
+            save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
+            monitor = NetworkTrafficMonitor(name='current', check_anomalies=True, logger=logger)
+            traffic_table = NetworkTrafficTable(monitor=monitor)
+            tcp_table = TCPTrafficTable(monitor=monitor)
+            icmp_table = NetworkTrafficTable(monitor=monitor)
+            time4 = time.time()
+            time1 = time4
+    if count % 100000 != 0:
+        part_number += 1
+        save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
     os.makedirs(output_dir, exist_ok=True)
-
+    ## 读取各个part的monitor，合并成一个summary monitor
+    summary_monitor = NetworkTrafficMonitor(name='summary', check_anomalies=True, logger=logger)
+    # 自下而上合并
+    file_list = [os.path.join(output_dir, f'current_monitor_{i}.pkl') for i in range(1, part_number + 1)]
+    final_monitor = merge_monitors(file_list, output_dir)
+    final_monitor.name = 'final_summary'
+    # 保存summary monitor
+    save_data_with_pickle(final_monitor, os.path.join(output_dir, 'final_summary_monitor.pkl'))
+    final_monitor.print_trees()
     with open(os.path.join(output_dir, 'icmp_dns_ntp_traffic_table.txt'), 'w') as f:
         sys.stdout = f
         traffic_table.print_tables()
@@ -79,13 +139,13 @@ def main(pcap_file, output_dir):
         sys.stdout = f
         icmp_table.rtt_table.print_rtt()
 
-    save_data_with_pickle(traffic_table, os.path.join(output_dir, 'icmp_dns_ntp_traffic.pkl'))
-    save_data_with_pickle(tcp_table, os.path.join(output_dir, 'tcp_traffic.pkl'))
-    save_data_with_pickle(icmp_table, os.path.join(output_dir, 'icmp_traffic.pkl'))
-    save_data_with_pickle(traffic_table.rtt_table, os.path.join(output_dir, 'icmp_dns_ntp_rtt.pkl'))
-    save_data_with_pickle(tcp_table.rtt_table, os.path.join(output_dir, 'tcp_rtt.pkl'))
-    save_data_with_pickle(icmp_table.rtt_table, os.path.join(output_dir, 'icmp_rtt.pkl'))
-    save_data_with_pickle(monitor, os.path.join(output_dir, 'current_monitor.pkl'))
+    # save_data_with_pickle(traffic_table, os.path.join(output_dir, 'icmp_dns_ntp_traffic.pkl'))
+    # save_data_with_pickle(tcp_table, os.path.join(output_dir, 'tcp_traffic.pkl'))
+    # save_data_with_pickle(icmp_table, os.path.join(output_dir, 'icmp_traffic.pkl'))
+    # save_data_with_pickle(traffic_table.rtt_table, os.path.join(output_dir, 'icmp_dns_ntp_rtt.pkl'))
+    # save_data_with_pickle(tcp_table.rtt_table, os.path.join(output_dir, 'tcp_rtt.pkl'))
+    # save_data_with_pickle(icmp_table.rtt_table, os.path.join(output_dir, 'icmp_rtt.pkl'))
+    save_data_with_pickle(summary_monitor, os.path.join(output_dir, 'current_monitor.pkl'))
     
     traffic_table.net_monitor.print_trees()
 if __name__ == "__main__":

@@ -15,21 +15,32 @@ class ListBuffer:
     ListBuffer: a class that implements a list-based buffer with a fixed size
     
     '''
-    def __init__(self, size):
-        
+    def __init__(self, size : int):
+        '''
+        params:
+            size (int): The maximum number of elements that the buffer can hold
+        '''
         self.size = size
         self.buffer = []
     def add(self, item : dict) -> None:
+        '''
+        params:
+            item: a dictionary containing the item to be added
+
+        to-do:
+            为什么要设置len不等于1的条件
+        '''
         if len(item) == 1:
             return
         self.buffer.append(item)
         if len(self.buffer) > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
 
-    def process_element(self, new_element: list, condition1, condition2, is_add : bool) -> list:
+    def process_element(self, new_element: list, condition1 : function, condition2 : function(existin), is_add : bool) -> list:
         '''
-        parameters:
+        This function processes a new element in the buffer and returns the first matched element and ends the processing when the second condition is met. 
         
+        parameters:
             new_element: value
             condition1: a function that takes two arguments (existing_item, new_item) and returns a boolean value, indicating whether to remove the existing item
             condition2: a function that takes two arguments (existing_item, new_item) and returns a boolean value, indicating whether to stop processing
@@ -63,8 +74,10 @@ class ListBuffer:
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
     # 3. S->C: seq = y, ack = x+50
-    def process_normal_tcp_element(self, new_element : list, is_add : bool) -> typing.Union[list, bool]:
+    def process_normal_tcp_element(self, new_element : dict, is_add : bool) -> typing.Union[list, bool]:
         '''
+        This function processes a new element in the buffer and returns the first matched element, aiming to detect normal/back-to-back TCP packets 
+        
         parameters:
             new_element: value
             is_add: a boolean value indicating whether to add the new element to the buffer
@@ -78,16 +91,19 @@ class ListBuffer:
         i = len(self.buffer) - 1
         count = 0
         PSH_flag = False
+        GAP_flag = True
         while i >= 0:
             current_element = self.buffer[i]# 考虑之前的包
             maxium_length = -1
             if new_element['direction'] != current_element['direction']: # 不同方向
                 if current_element['ack'] < new_element['seq']:# 过早的数据包
                     self.buffer.pop(i)# 过期的不留
-                elif current_element['ack'] == new_element['seq'] and current_element['seq'] == new_element['ack'] :
+                elif current_element['ack'] == new_element['seq'] and current_element['seq'] <= new_element['ack'] :
                     if 'PSH' in current_element and current_element['PSH'] == 1:
                         PSH_flag = True
                     if first_match_value is None:
+                        if current_element['next_seq'] == new_element['ack']:
+                            GAP_flag = False
                         first_match_value = copy.deepcopy(current_element)
                         maxium_length = first_match_value['length']
                         count += 1
@@ -111,7 +127,12 @@ class ListBuffer:
             return None, None
         if not PSH_flag:# 没有psh。也没有back-to-back
             return None, None
-        return first_match_value, count >= 2 
+        res = "BTB"
+        if count < 2 and PSH_flag:
+            res = "PSH"
+        if GAP_flag:
+            res = "GAP"
+        return first_match_value, res
                         
             
     def print_lb(self):
@@ -126,7 +147,9 @@ class ListBuffer:
 
 def random_compare_listbuffer(l1 : ListBuffer | dict, l2 : ListBuffer) -> bool:
     '''
+    This function compares two ListBuffers and returns True if the first ListBuffer is selected, and False otherwise
     
+    havent been used
     '''
     timestamp = max(l1.buffer[-1]['timestamp'], l2.buffer[-1]['timestamp'])
     if isinstance(l1, dict):
@@ -160,12 +183,15 @@ class CuckooHashTable():
             for NTP : 'code'
             for DNS : 'query', 'response', 'id'
     '''
-    def __init__(self, initial_size = 100013, buffersize = 1000) -> None:
+    def __init__(self, initial_size = 100013, buffersize = 30) -> None:
         '''
+        Initialize the CuckooHashTable with the given initial size and buffer size
         parameter:
             initial_size: the initial size of the hash table
             buffersize: the size of the buffer
         
+        
+        我觉得最大30就够了
         '''
         self.size = initial_size
         self.buffersize = buffersize
@@ -176,11 +202,26 @@ class CuckooHashTable():
         self.max_rehash_attempts = 5
         
     def hash_ip(self, ip : ipaddress.IPv4Address | ipaddress.IPv6Address) -> int:
+        '''
+        This function hashes an IP address and returns the hash value
+        params:
+            ip: an IPv4 or IPv6 address
+        return:
+            ip_int: the hash value of the IP address
+        '''
         ip_int = int(ipaddress.ip_address(ip))
         if ipaddress.ip_address(ip).version == 6:
             ip_int = ip_int % 2**64  # 简化 IPv6 地址
         return ip_int 
     def hash_functions(self, key_dict: dict, function_id: int) -> int:
+        '''
+        This function hashes the given key dictionary using the specified hash function
+        params:
+            key_dict: a dictionary containing the keys to be hashed
+            function_id: the ID of the hash function to be used
+        return:
+            hash_value: the hash value of the key dictionary
+        '''
         result = 0
         if 'ip' in key_dict and 'protocol' in key_dict:
             ip_hashes = [int(ipaddress.ip_address(ip)) & ((1 << 64) - 1) for ip in key_dict['ip']]
@@ -201,6 +242,13 @@ class CuckooHashTable():
         else:  # function_id == 2
             return (result * 805306457 % 2**32) % self.size
     def _rehash(self) -> None:
+        '''
+        This function rehashes the hash table when collisions occur, doubling the size of the hash table and reinserting all items
+        params:
+            None
+        return:
+            None
+        '''
         # 重新哈希的实现
         old_size = self.size
         self.size *= 2
@@ -251,8 +299,6 @@ class CuckooHashTable():
         return:
             success: a boolean value indicating whether the insertion is successful
         '''
-        if not isinstance(key, dict):
-            raise ValueError("Key must be a dictionary")
         table_num, _= self.lookup(key)
         if table_num is not None:
             index = self.hash_functions(key, table_num)
@@ -373,7 +419,6 @@ class CuckooHashTable():
         return None, None  # Key not found
     def delete(self, key : dict) -> bool:
         '''
-        
         parameter :
             key: a dictionary containing the keys to be deleted
         return :

@@ -1,3 +1,5 @@
+import sys
+sys.path.append('/Users/choumingxi/Documents/GitHub/newrtt/src')
 import ipaddress
 from collections import defaultdict, Counter
 import time
@@ -8,14 +10,14 @@ import os
 import pickle
 import math
 import time
+import seaborn
 import math
 from collections import deque
-
-import time
-import math
-from collections import deque
-
 class WelfordVariance:
+    '''
+    This class implements the Welford algorithm for calculating the variance of a stream of data points.
+    
+    '''
     def __init__(self, time_window : int = 1200, max_count : int = 120):
         '''
         params:
@@ -92,7 +94,7 @@ class WelfordVariance:
         self.remove_outdated(current_time)
         
         # 检查新数据点是否异常
-        if self.count >= 6 and newrtt - self.mean >  2 + 0.8 * math.sqrt(self.variance()):
+        if self.count >= 6 and newrtt - self.mean >  3 + 0.95 * math.sqrt(self.variance()):
             return True
         
         # 如果新数据点不是异常值，则更新统计数据
@@ -106,6 +108,10 @@ def default_state():
         'timestamps': []
     }
 class CompressedIPNode:
+    '''
+    This class represents a node in a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
+    It contains methods for recording RTT values and network activity, as well as aggregating statistics and detecting anomalies.
+    '''
     def __init__(self, network : ipaddress.IPv4Address|ipaddress.IPv6Address, logger : str=None):
         '''
         params:
@@ -120,8 +126,10 @@ class CompressedIPNode:
         self.alerts = []
         self.logger = logger
         self.contain_ip_number = 0
+        self.contain_rtt_ip_number = 0
         self.stats = defaultdict(default_state)
         self.rtt_records = defaultdict(list) # 正常的rtt记录
+        self.all_rtt_records = [] # 所有正常的rtt记录
         self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录
         self.rtt_stats = {
             'min_rtt': float('inf'),
@@ -134,6 +142,7 @@ class CompressedIPNode:
         '''
         聚合来自所有子节点的stats数据。
         '''
+        return 
         if not self._stats_dirty:
             return # 如果没有新的统计数据，不需要重新聚合
         """聚合来自所有子节点的统计数据。"""
@@ -163,6 +172,9 @@ class CompressedIPNode:
         '''
         aggregated_rtt = defaultdict(list)
         for child in self.children.values():
+            if len(child.rtt_records) < 5:
+                continue
+            
             for key, values in child.rtt_records.items(): # 只收集有效的rtt记录
                 aggregated_rtt[key].extend(values)
         self.rtt_records = aggregated_rtt
@@ -188,18 +200,40 @@ class CompressedIPNode:
                 self.rtt_WelfordVariance.update(rtt, timestamp)
             self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
-            if rtt < self.rtt_stats['min_rtt']:
+            self.all_rtt_records.append((rtt, timestamp))
+            if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
                 self.rtt_stats['min_rtt'] = rtt
-            if rtt > self.rtt_stats['max_rtt']:
+            if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
                 self.rtt_stats['max_rtt'] = rtt
                 
-        if self.logger:
-            self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
-            
+            if self.logger:
+                self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+            # 父母就不检查了    
+            if self.parent and len(self.all_rtt_records) > 5:
+                self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+    def upstream_rtt(self, protocol, pattern, rtt, timestamp):
+        '''
+        This function records the upstream RTT values, it delivers the RTT values to the parent node.
+        params:
+            protocol: 协议
+            pattern: 模式
+            rtt: RTT值
+            timestamp: 时间戳
+        上游RTT。
+        '''
+        key = (protocol, pattern)
+        self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+        self.rtt_records[key].append((rtt, timestamp))
+        self.all_rtt_records.append((rtt, timestamp))
+        if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
+            self.rtt_stats['min_rtt'] = rtt
+        if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
+            self.rtt_stats['max_rtt'] = rtt
         if self.parent:
-            self.parent.record_rtt(protocol, pattern, rtt, timestamp, check_anomalies)
+            self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
     def record_activity_recursive(self, protocol, action, count=1, timestamp=None, check_anomalies=False):
         '''
+        This function records activity recursively.
         params:
             protocol: 协议
             action: 动作
@@ -221,21 +255,35 @@ class CompressedIPNode:
             self.parent.record_activity_recursive(protocol, action, count, timestamp, check_anomalies)
     def calculate_contain_ip_number(self):
         '''
-        计算当前节点包含的IP数量。
+        This function calculates the number of IP addresses contained in the network.
+        params:
+            None
+        returns:
+            contain_ip_number(int): The number of IP addresses contained in the network.
         '''
         return self.contain_ip_number
     def update_contain_ip_number(self):
         if self.network.prefixlen == 32 and self.network.version == 4:
             self.contain_ip_number = 1
+            if len(self.rtt_records) > 5:
+                self.contain_rtt_ip_number = 1
         elif self.network.prefixlen == 128 and self.network.version == 6:
             self.contain_ip_number = 1
+            if len(self.rtt_records) > 5:
+                self.contain_rtt_ip_number = 1
         else:
             self.contain_ip_number = sum([child.calculate_contain_ip_number() for child in self.children.values()])
+            self.contain_rtt_ip_number = sum([child.contain_rtt_ip_number for child in self.children.values()])
     def detect_protocols_anomalie(self, protocol):
         '''
+        This function detects anomalies in the network traffic.
+        havent been implemented yet.
+        
+        
         params:
-            protocol: 协议
-        检测协议;是否异常。
+            protocol: The protocol to check for anomalies
+        returns:
+            None
         '''
         # 示例：检测DNS请求和响应的数量差异
         if protocol == "DNS":
@@ -248,9 +296,11 @@ class CompressedIPNode:
         
     def get_rtt_stats(self):
         '''
+        This function returns the RTT statistics for the network.
         params:
             None
-        返回RTT统计数据。
+        returns:
+            rtt_stats(dict): The RTT statistics for the network
         '''
         all_rtts = []
         for rtts in self.rtt_records.values():
@@ -265,9 +315,11 @@ class CompressedIPNode:
 
     def get_subnets_rtt_stats(self):
         '''
+        This function returns the RTT statistics for the subnets.
         params:
             None
-        返回子网的RTT统计数据。
+            
+        have not been implemented yet.
         '''
         min_rtt, max_rtt, all_rtts = float('inf'), float('-inf'), []
         for child in self.children.values():
@@ -329,19 +381,34 @@ class CompressedIPNode:
         if prefix:
             prefix = '|' + '-' * (len(prefix) - 1)
         wol = self.rtt_WelfordVariance.str_variance()
-        basic_info = f"{prefix}{self.network}, : IP Count={self.contain_ip_number}, RTT range: {self.rtt_stats['min_rtt']}ms - {self.rtt_stats['max_rtt']}ms, wolvalue = {wol},logger = {self.logger}"
+        basic_info = f"{prefix}{self.network}, : IP Count={self.contain_ip_number, self.contain_rtt_ip_number}, RTT range: {self.rtt_stats['min_rtt']}ms - {self.rtt_stats['max_rtt']}ms, wolvalue = {wol},logger = {self.logger}"
         return basic_info
     
 class CompressedIPTrie:
+    '''
+    This class represents a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
+    '''
     def __init__(self, ip_version=4, logger=None):
+        '''
+        This function initializes a new compressed trie for storing IP addresses.
+        params:
+            ip_version: The IP version (4 or 6)
+            logger: The logger object
+        return:
+            None
+        '''
         self.root = CompressedIPNode(network=ipaddress.ip_network("0.0.0.0/0" if ip_version == 4 else "::/0", ), logger=logger)
         self.logger = logger    
         self.ip_version = ip_version
     def add_ip(self, ip : str):
         '''
+        This function adds an IP address to the trie. If the IP address is already in the trie, it will not be added again, otherwise it will be created and added.
+        If it is a new node, then it will be merged with its parent node if possible.
+        
         params:
-            ip: IP地址
-        添加IP地址。
+            ip: The IP address to add
+        returns:
+            None
         '''
     # 确保IP版本匹配
         if ipaddress.ip_address(ip).version != self.ip_version:
@@ -356,9 +423,11 @@ class CompressedIPTrie:
 
     def insert_network(self, new_net: CompressedIPNode):
         '''
+        This function inserts a new network into the trie. It will recursively find the correct insertion point.
         params:
-            new_net: 新的IP节点
-        插入新的IP节点。
+            new_net: The new IP node
+        returns:
+            None     
         '''
         node = self.root
         # 需要递归查找正确的插入点
@@ -377,15 +446,19 @@ class CompressedIPTrie:
     
     def _merge_network(self, new_net : CompressedIPNode) -> None:
         '''
+        This function merges networks if possible. It will recursively merge networks up to the root node.
         params:
-            new_net: 新的IP节点
-        合并网络。
+            new_net: The new IP node
+        returns:
+            None
+        
         '''
         # 合并网络应当考虑可能需要递归上溯到不只是直接父节点
         step = 2 if self.ip_version == 4 else 4
         merge_count = 2 if self.ip_version == 4 else 4
+        max_subnet =  8 if self.ip_version == 4 else 32
         parent = new_net.parent
-        while parent:
+        while parent and new_net.network.prefixlen <= max_subnet:
             super_net = new_net.network.supernet(new_prefix=new_net.network.prefixlen - step)
             if super_net.prefixlen % step != 0:
                 print('Invalid supernet.')
@@ -393,11 +466,13 @@ class CompressedIPTrie:
             elif super_net == parent.network:
                 break
             # 检查是否有足够的子节点可以合并
+            max_subnet_prefix = super_net.prefixlen - step
             eligible_children = [child for child in parent.children.values() if child.network.subnet_of(super_net)]
+            max_subnet_children = [child for child in parent.children.values() if child.network.subnet_of(super_net) and child.network.prefixlen == max_subnet_children]
             # TODO : 可以根据需要调整合并的条件 首先就是根据子网的rtt数量 这里需要一个聚类方法，参考指标就是各个子网的rtt_stats
             
             
-            if len(eligible_children) >= merge_count:
+            if len(max_subnet_children) >= merge_count:
                 supernet_node = CompressedIPNode(network=super_net, logger=self.logger)
                 parent.children[super_net] = supernet_node
                 for child in eligible_children:
@@ -416,9 +491,11 @@ class CompressedIPTrie:
 
     def find_node(self, ip: str) -> CompressedIPNode:
         '''
+        This function finds the node in the trie that contains the given IP address.
         params:
-            ip: IP地址
-        查找IP节点。
+            ip: The IP address to find
+        returns:
+            node(CompressedIPNode): The node that contains the IP address
         '''
         node = self.root
         ip_obj = ipaddress.ip_address(ip)
@@ -439,15 +516,23 @@ class CompressedIPTrie:
                 return None
     def record_activity(self, ip : str, activity_type : str, count=1, timestamp=None):
         '''
-        params:
-            ip: IP地址
-            activity_type: 活动类型
-            count: 数量
-            timestamp: 时间戳
-        记录活动。
+        This function records activity for a given IP address. It will find the node that contains the IP address and record the activity.
+        If the IP address is not in the trie, it will be added first.
+        params: 
+            ip: The IP address
+            activity_type: The type of activity
+            count: The count of the activity
+            timestamp: The timestamp of the activity
+        returns:
+            None
         '''
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
+        trie : CompressedIPTrie
         node = trie.find_node(ip)
+        if node == None:
+            trie.add_ip(ip)
+            node = trie.find_node(ip)
+            
         if node:
             node.record_activity(activity_type, count, timestamp)
     def print_tree(self, node=None, indent=0, file_path='tree.txt'):
@@ -469,7 +554,17 @@ class CompressedIPTrie:
             f.write(f'{node.__anormalies__(indent_str)}\n')
         for child in node.children.values():
             self.print_tree(child, indent + 1, file_path)
+    def collect_smallest_subnets(self):
+        smallest_subnets = []
+        self._collect_smallest_subnets_helper(self.root, smallest_subnets)
+        return smallest_subnets
 
+    def _collect_smallest_subnets_helper(self, node, smallest_subnets):
+        # Define what is considered a "smallest subnet"
+        if (self.ip_version == 4 and node.network.prefixlen == 32) or (self.ip_version == 6 and node.network.prefixlen == 128):
+            smallest_subnets.append(node)
+        for child in node.children.values():
+            self._collect_smallest_subnets_helper(child, smallest_subnets)
 class NetworkTrafficMonitor:
     def __init__(self, name = '', check_anomalies = 'True', logger = None):
         '''
@@ -567,9 +662,10 @@ class NetworkTrafficMonitor:
         '''
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
         node = trie.find_node(ip)
-        total_requests = sum(node.stats.values())
-        return total_requests > threshold
-
+        if node:
+            total_requests = sum(node.stats.values())
+            return total_requests > threshold
+        return False
     def print_trees(self):
         with open(f'{self.suffix}_tree.txt', 'w') as f:
             f.write("")  # Clear the contents of the file
@@ -580,6 +676,48 @@ class NetworkTrafficMonitor:
     def save_state(self, filename):
         with open(filename, 'wb') as f:
             pickle.dump(self, f)
+    def merge_nodes(self, node_a, node_b):
+        # 合并统计数据和RTT记录
+        for key, stats in node_b.stats.items():
+            if key in node_a.stats:
+                node_a.stats[key]['count'] += stats['count']
+                node_a.stats[key]['timestamps'].extend(stats['timestamps'])
+            else:
+                node_a.stats[key] = stats
+
+        for key, rtts in node_b.rtt_records.items():
+            if key in node_a.rtt_records:
+                node_a.rtt_records[key].extend(rtts)
+            else:
+                node_a.rtt_records[key] = rtts
+
+        # 递归合并子节点
+        for subnet, child_node_b in node_b.children.items():
+            if subnet in node_a.children:
+                self.merge_nodes(node_a.children[subnet], child_node_b)
+            else:
+                node_a.children[subnet] = child_node_b
+                child_node_b.parent = node_a
+
+    def merge_smallest_network(self, node_parent, ip_version=4):
+        prefix = 32 if ip_version == 4 else 128
+        trie = self.ipv4_trie if ip_version == 4 else self.ipv6_trie
+
+        for child in node_parent.children.values():
+            if child.network.prefixlen == prefix:
+                target_node = trie.find_node(str(child.network.network_address))
+                if target_node is None:
+                    trie.add_ip(str(child.network.network_address))
+                    target_node = trie.find_node(str(child.network.network_address))
+                self.merge_nodes(target_node, child)
+            else:
+                self.merge_smallest_network(child, ip_version)
+
+    def merge_monitor(self, other_monitor):
+        # 合并 IPv4 和 IPv6 Trie 的根节点
+        self.merge_smallest_network(other_monitor.ipv4_trie.root, ip_version=4)
+        self.merge_smallest_network(other_monitor.ipv6_trie.root, ip_version=6)
+    
     @staticmethod
     def load_state(filename):
         with open(filename, 'rb') as f:
@@ -591,7 +729,7 @@ class NetworkTrafficMonitor:
         return (f'NetworkTrafficMonitor({self.ipv4_trie}, {self.ipv6_trie})')
     def __str__(self) -> str:
         return (f'NetworkTrafficMonitor({self.ipv4_trie}, {self.ipv6_trie})')
-    
+
 def generate_single_ip(base_net, prefix):
     '''
     params:
@@ -628,7 +766,15 @@ def setup_logging():
     return logging.getLogger()
 
 # 调用 setup_logging 函数以初始化日志设置
-
+def read_pickle(filename):
+    '''
+    params:
+        filename: 文件名
+    读取pickle文件。
+    '''
+    with open (filename, 'rb') as f:
+        data = pickle.load(f)
+        return data
 def main():
     logger = setup_logging()
     monitor = NetworkTrafficMonitor(logger = logger)
@@ -685,8 +831,12 @@ def main():
     # 打印Trie树以查看子网聚合情况
     monitor.print_trees()
     monitor.save_state('network_monitor.pkl')
-    
+
+def test():
+    monitor = read_pickle('current_monitor.pkl')
+    print(monitor)
+    monitor.print_trees()
 if __name__ == "__main__":
-    main()
+    test()
 
 
