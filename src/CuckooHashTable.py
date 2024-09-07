@@ -4,6 +4,7 @@ import sys
 import copy
 import typing
 import random
+from typing import Callable
 from decimal import Decimal
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils.utils import match_keys, protocol_to_int
@@ -36,7 +37,7 @@ class ListBuffer:
         if len(self.buffer) > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
 
-    def process_element(self, new_element: list, condition1 : function, condition2 : function(existin), is_add : bool) -> list:
+    def process_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
         '''
         This function processes a new element in the buffer and returns the first matched element and ends the processing when the second condition is met. 
         
