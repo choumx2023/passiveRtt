@@ -13,6 +13,7 @@ import time
 import seaborn
 import math
 from collections import deque
+from ipaddress import IPv4Address, IPv6Address
 class WelfordVariance:
     '''
     This class implements the Welford algorithm for calculating the variance of a stream of data points.
@@ -31,7 +32,7 @@ class WelfordVariance:
         self.time_window = time_window
         self.max_count = max_count
         self.data = deque()
-
+        self.data : deque[tuple[float, float]]
     def update(self, x : float, timestamp : float):
         '''
         params:
@@ -77,7 +78,7 @@ class WelfordVariance:
     def str_variance(self):
         return f'Count: {self.count}, Variance: {self.variance()}, Mean: {self.mean}'
 
-    def remove_outdated(self, current_time):
+    def remove_outdated(self, current_time : float):
         '''
         params:
             current_time: 当前时间戳
@@ -88,7 +89,7 @@ class WelfordVariance:
             old_value, _ = self.data.popleft()
             self.remove(old_value)
 
-    def check_anomalies(self, newrtt, timestamp):
+    def check_anomalies(self, newrtt : float, timestamp : float):
         current_time = timestamp
         # 移除超出时间窗口的数据点
         self.remove_outdated(current_time)
@@ -114,6 +115,7 @@ class CompressedIPNode:
     '''
     def __init__(self, network : ipaddress.IPv4Address|ipaddress.IPv6Address, logger : str=None):
         '''
+
         params:
             network: IP地址的网络范围
             logger: 日志记录器
@@ -123,6 +125,7 @@ class CompressedIPNode:
         self.subnets = []  # 记录由哪些子网合并而来
         self.children = {} # 存储子节点
         self.parent = None  # 记录父节点
+        self.parent : CompressedIPNode | None
         self.alerts = []
         self.logger = logger
         self.contain_ip_number = 0
@@ -141,6 +144,8 @@ class CompressedIPNode:
     def aggregate_stats(self):
         '''
         聚合来自所有子节点的stats数据。
+        因为太多了就不聚合了
+
         '''
         return 
         if not self._stats_dirty:
@@ -153,7 +158,7 @@ class CompressedIPNode:
                 aggregated_stats[key]['timestamps'].extend(value['timestamps'])
         self.stats = aggregated_stats
         self._stats_dirty = False
-    def is_rtt_anomalous(self,  rtt, timestamp):
+    def is_rtt_anomalous(self,  rtt : float, timestamp : float):
         '''
         params:
             rtt: RTT值
@@ -178,7 +183,7 @@ class CompressedIPNode:
             for key, values in child.rtt_records.items(): # 只收集有效的rtt记录
                 aggregated_rtt[key].extend(values)
         self.rtt_records = aggregated_rtt
-    def record_rtt(self, protocol, pattern, rtt, timestamp,  check_anomalies=False):
+    def record_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float,  check_anomalies=False):
         '''
         params:
             protocol: 协议
@@ -211,7 +216,7 @@ class CompressedIPNode:
             # 父母就不检查了    
             if self.parent and len(self.all_rtt_records) > 5:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-    def upstream_rtt(self, protocol, pattern, rtt, timestamp):
+    def upstream_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float):
         '''
         This function records the upstream RTT values, it delivers the RTT values to the parent node.
         params:
@@ -231,9 +236,10 @@ class CompressedIPNode:
             self.rtt_stats['max_rtt'] = rtt
         if self.parent:
             self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-    def record_activity_recursive(self, protocol, action, count=1, timestamp=None, check_anomalies=False):
+    def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp=None, check_anomalies=False):
         '''
         This function records activity recursively.
+
         params:
             protocol: 协议
             action: 动作
@@ -535,7 +541,7 @@ class CompressedIPTrie:
             
         if node:
             node.record_activity(activity_type, count, timestamp)
-    def print_tree(self, node=None, indent=0, file_path='tree.txt'):
+    def print_tree(self, node = None, indent = 0, file_path = 'tree.txt'):
         '''
         params:
             node: 节点
@@ -615,7 +621,7 @@ class NetworkTrafficMonitor:
         if node and protocol in node.rtt_records:
             return statistics.mean(node.rtt_records[protocol]) if node.rtt_records[protocol] else None
         return None
-    def query_activity(self, ip, protocol, action):
+    def query_activity(self, ip : IPv4Address | IPv6Address, protocol :str, action :str):
         '''
         params:
             ip: IP地址
@@ -653,7 +659,7 @@ class NetworkTrafficMonitor:
         # 可选：检测异常情况
         if 0:
             node.check_rtt_anomalies()
-    def detect_attack(self, ip, threshold=1000):
+    def detect_attack(self, ip, threshold = 1000):
         '''
         params:
             ip: IP地址
@@ -761,6 +767,12 @@ def setup_logging():
         level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
+
+
+
+
+
+        
     )
 
     return logging.getLogger()
