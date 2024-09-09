@@ -123,7 +123,7 @@ class CompressedIPNode:
         '''
         self.network = network # 记录当前节点的网络范围
         self.subnets = []  # 记录由哪些子网合并而来
-        self.children = {} # 存储子节点
+        self.children = {} # 存储子节点 (str, CompressedIPNode)
         self.parent = None  # 记录父节点
         self.parent : CompressedIPNode | None
         self.alerts = []
@@ -173,15 +173,17 @@ class CompressedIPNode:
         '''
         params:
             None
-        聚合来自所有子节点的RTT数据。
+        聚合来自所有子节点的RTT数据。顺带更新rtt_stats。
         '''
         aggregated_rtt = defaultdict(list)
         for child in self.children.values():
             if len(child.rtt_records) < 5:
                 continue
-            
             for key, values in child.rtt_records.items(): # 只收集有效的rtt记录
                 aggregated_rtt[key].extend(values)
+            self.rtt_stats['min_rtt'] = min(self.rtt_stats['min_rtt'], child.rtt_stats['min_rtt'])
+            self.rtt_stats['max_rtt'] = max(self.rtt_stats['max_rtt'], child.rtt_stats['max_rtt'])
+
         self.rtt_records = aggregated_rtt
     def record_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float,  check_anomalies=False):
         '''
@@ -216,6 +218,7 @@ class CompressedIPNode:
             # 父母就不检查了    
             if self.parent and len(self.all_rtt_records) > 5:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+
     def upstream_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float):
         '''
         This function records the upstream RTT values, it delivers the RTT values to the parent node.
@@ -236,6 +239,7 @@ class CompressedIPNode:
             self.rtt_stats['max_rtt'] = rtt
         if self.parent:
             self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+    
     def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp=None, check_anomalies=False):
         '''
         This function records activity recursively.
@@ -353,7 +357,8 @@ class CompressedIPNode:
             return f'\n{prefix1}  '.join([', '.join(map(str, rtts[i:i+8])) for i in range(0, len(rtts), 8)])
         rtt_info = '\n'.join(
             f'{prefix1}{protocol}**{pattern} RTT : \n  {prefix1}{format_output(rtts)}'
-            for (protocol, pattern), rtts in self.rtt_records.items())
+            for (protocol, pattern), rtts in self.rtt_records.items()
+            )
         return f'{prefix}RTT Datas :\n {rtt_info}'
     def __anormalies__(self, prefix=''):
         '''
@@ -538,7 +543,6 @@ class CompressedIPTrie:
         if node == None:
             trie.add_ip(ip)
             node = trie.find_node(ip)
-            
         if node:
             node.record_activity(activity_type, count, timestamp)
     def print_tree(self, node = None, indent = 0, file_path = 'tree.txt'):
@@ -682,7 +686,7 @@ class NetworkTrafficMonitor:
     def save_state(self, filename):
         with open(filename, 'wb') as f:
             pickle.dump(self, f)
-    def merge_nodes(self, node_a, node_b):
+    def merge_nodes(self, node_a : CompressedIPNode, node_b : CompressedIPNode):
         # 合并统计数据和RTT记录
         for key, stats in node_b.stats.items():
             if key in node_a.stats:
@@ -690,13 +694,15 @@ class NetworkTrafficMonitor:
                 node_a.stats[key]['timestamps'].extend(stats['timestamps'])
             else:
                 node_a.stats[key] = stats
-
         for key, rtts in node_b.rtt_records.items():
             if key in node_a.rtt_records:
                 node_a.rtt_records[key].extend(rtts)
             else:
                 node_a.rtt_records[key] = rtts
-
+        if node_b.rtt_stats['min_rtt'] < node_a.rtt_stats['min_rtt']:
+            node_a.rtt_stats['min_rtt'] = node_b.rtt_stats['min_rtt']
+        if node_b.rtt_stats['max_rtt'] > node_a.rtt_stats['max_rtt']:
+            node_a.rtt_stats['max_rtt'] = node_b.rtt_stats['max_rtt']
         # 递归合并子节点
         for subnet, child_node_b in node_b.children.items():
             if subnet in node_a.children:
@@ -719,13 +725,13 @@ class NetworkTrafficMonitor:
             else:
                 self.merge_smallest_network(child, ip_version)
 
-    def merge_monitor(self, other_monitor):
+    def merge_monitor(self, other_monitor : 'NetworkTrafficMonitor'):
         # 合并 IPv4 和 IPv6 Trie 的根节点
         self.merge_smallest_network(other_monitor.ipv4_trie.root, ip_version=4)
         self.merge_smallest_network(other_monitor.ipv6_trie.root, ip_version=6)
     
     @staticmethod
-    def load_state(filename):
+    def load_state(filename : str):
         with open(filename, 'rb') as f:
             return pickle.load(f)
     def clear_state(self):
