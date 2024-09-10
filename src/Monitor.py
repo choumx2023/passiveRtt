@@ -250,7 +250,7 @@ class CompressedIPNode:
         if self.network.prefixlen <= max_mask:
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
-            
+        # 无论多大，都更新最大和最小值
         if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
             self.rtt_stats['min_rtt'] = rtt
         if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
@@ -258,7 +258,7 @@ class CompressedIPNode:
         if self.parent:
             self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
     
-    def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp=None, check_anomalies=False):
+    def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp = None, check_anomalies=False):
         '''
         This function records activity recursively.
 
@@ -281,7 +281,7 @@ class CompressedIPNode:
         # Decide whether to check for anomalies only once at the initial call
         if self.parent:
             self.parent.record_activity_recursive(protocol, action, count, timestamp, check_anomalies)
-    def calculate_contain_ip_number(self):
+    def get_contain_ip_number(self):
         '''
         This function calculates the number of IP addresses contained in the network.
         params:
@@ -300,7 +300,7 @@ class CompressedIPNode:
             if len(self.rtt_records) > 5:
                 self.contain_rtt_ip_number = 1
         else:
-            self.contain_ip_number = sum([child.calculate_contain_ip_number() for child in self.children.values()])
+            self.contain_ip_number = sum([child.get_contain_ip_number() for child in self.children.values()])
             self.contain_rtt_ip_number = sum([child.contain_rtt_ip_number for child in self.children.values()])
     def detect_protocols_anomalie(self, protocol):
         '''
