@@ -2,6 +2,7 @@
 *.pcap
 *.pkl
 *.png
+*.log
 .venv
 output/
 current/

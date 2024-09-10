@@ -127,9 +127,7 @@ class CompressedIPNode:
         all_rtt_records: A list of all RTT records
         anomalous_rtts_records: A dictionary of anomalous RTT records
         rtt_stats: A dictionary of RTT statistics
-        rtt_WelfordVariance: A WelfordVariance object for calculating RTT variance  
-        _stats_dirty: A flag to indicate if the stats data is dirty
-        _rtt_dirty: A flag to indicate if the RTT data is dirty
+        rtt_WelfordVariance: A WelfordVariance object for calculating RTT variance 
     '''
     def __init__(self, network : ipaddress.IPv4Address|ipaddress.IPv6Address, logger : str=None):
         '''
@@ -149,16 +147,14 @@ class CompressedIPNode:
         self.contain_ip_number = 0
         self.contain_rtt_ip_number = 0
         self.stats = defaultdict(default_state)
-        self.rtt_records = defaultdict(list) # 正常的rtt记录
-        self.all_rtt_records = [] # 所有正常的rtt记录
-        self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录
+        self.rtt_records = defaultdict(list) # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
+        self.all_rtt_records = [] # 所有正常的rtt记录，不区分协议和模式
+        self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.rtt_stats = {
             'min_rtt': float('inf'),
             'max_rtt': float('-inf'), 
         }
         self.rtt_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
-        self._stats_dirty = True
-        self._rtt_dirty = True
     def aggregate_stats(self):
         '''
         聚合来自所有子节点的stats数据。
@@ -166,8 +162,6 @@ class CompressedIPNode:
 
         '''
         return 
-        if not self._stats_dirty:
-            return # 如果没有新的统计数据，不需要重新聚合
         """聚合来自所有子节点的统计数据。"""
         aggregated_stats = defaultdict(default_state)
         for child in self.children.values():
@@ -175,7 +169,6 @@ class CompressedIPNode:
                 aggregated_stats[key]['count'] += value['count']
                 aggregated_stats[key]['timestamps'].extend(value['timestamps'])
         self.stats = aggregated_stats
-        self._stats_dirty = False
     def is_rtt_anomalous(self,  rtt : float, timestamp : float):
         '''
         params:
@@ -193,7 +186,9 @@ class CompressedIPNode:
             None
         聚合来自所有子节点的RTT数据。顺带更新rtt_stats。
         '''
-        max_mask = 24 if self.network.version == 4 else 24*4
+        # 聚合来自所有子节点的RTT数据，要求只聚合不大的子网掩码长度
+        # ipv4的最大子网掩码长度是24，ipv6的最大子网掩码长度是96
+        max_mask = 24 if self.network.version == 4 else 24 * 4
         aggregated_rtt = defaultdict(list)
         for child in self.children.values():
             self.rtt_stats['min_rtt'] = min(self.rtt_stats['min_rtt'], child.rtt_stats['min_rtt'])
@@ -207,6 +202,7 @@ class CompressedIPNode:
 
     def record_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float,  check_anomalies=False):
         '''
+        适合最小的ip地址
         params:
             protocol: 协议
             pattern: 模式
@@ -215,8 +211,6 @@ class CompressedIPNode:
             check_anomalies: 是否检查异常
         记录RTT值。
         '''
-        if not self._rtt_dirty:
-            return
         key = (protocol, pattern)
         if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
             self.anomalous_rtts_records[key].append((rtt, timestamp))
@@ -235,7 +229,7 @@ class CompressedIPNode:
                 
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
-            # 父母就不检查了    
+            # 父母就不检查了，向上传递
             if self.parent and len(self.all_rtt_records) > 5:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
 
@@ -251,8 +245,12 @@ class CompressedIPNode:
         '''
         key = (protocol, pattern)
         self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
-        self.rtt_records[key].append((rtt, timestamp))
-        self.all_rtt_records.append((rtt, timestamp))
+        max_mask = 24 if self.network.version == 4 else 24 * 4
+        # 只记录到一定的子网掩码长度
+        if self.network.prefixlen <= max_mask:
+            self.rtt_records[key].append((rtt, timestamp))
+            self.all_rtt_records.append((rtt, timestamp))
+            
         if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
             self.rtt_stats['min_rtt'] = rtt
         if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
@@ -793,12 +791,6 @@ def setup_logging():
         level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
-
-
-
-
-
-        
     )
 
     return logging.getLogger()
