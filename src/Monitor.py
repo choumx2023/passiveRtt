@@ -410,7 +410,7 @@ class CompressedIPNode:
         if prefix:
             prefix = '|' + '-' * (len(prefix) - 1)
         wol = self.rtt_WelfordVariance.str_variance()
-        basic_info = f"{prefix}{self.network}, : IP Count={self.contain_ip_number, self.contain_rtt_ip_number}, RTT range: {self.rtt_stats['min_rtt']}ms - {self.rtt_stats['max_rtt']}ms, wolvalue = {wol},logger = {self.logger}"
+        basic_info = f"{prefix}{self.network}, : IP Count={self.contain_ip_number, self.contain_rtt_ip_number}, RTT range: {self.rtt_stats['min_rtt']}ms - {self.rtt_stats['max_rtt']}ms, wolvalue = {wol}"
         return basic_info
     
 class CompressedIPTrie:
@@ -659,7 +659,7 @@ class NetworkTrafficMonitor:
             timestamps = [item[1] for item in node.stats[key]]  # 获取所有时间戳
             return total_count, timestamps
         return 0, []
-    def add_or_update_ip_with_rtt(self, ip, protocol, pattern, rtt, timestamp):
+    def add_or_update_ip_with_rtt(self, ip : str, protocol : str, pattern : str, rtt : float, timestamp : float):
         '''
         params:
             ip: IP地址
