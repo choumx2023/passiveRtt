@@ -245,12 +245,13 @@ class NetworkTrafficTable(CuckooHashTable):
         dst_port = packet[UDP].dport
         src_port = packet[UDP].sport
         ntp_mode = packet[NTP].mode
+        if ntp_mode not in [3, 4]:
+            return
         timestamp = packet.time
         orig_timestamp = packet[NTP].orig
         recv_timestamp = packet[NTP].recv
         sent_timestamp = packet[NTP].sent
         ref_timestamp = packet[NTP].ref
-        
         self.net_monitor.add_ip_and_record_activity(src_ip, 'NTP', 'Request' if ntp_mode == 3 else 'Response', 1, float(timestamp))
         self.net_monitor.add_ip_and_record_activity(dst_ip, 'NTP', 'Request' if ntp_mode == 3 else 'Response', 1, float(timestamp))
         key = {'ip':(src_ip, dst_ip),'port':(src_port, dst_port), 'protocol': 'NTP'}
@@ -308,10 +309,11 @@ class TCPTrafficTable(CuckooHashTable):
         '''
         This function initializes the TCPTrafficTable, add the monitor instance, and the RTT table instance.
         '''
-        super().__init__()
+        super().__init__(type = 'TCP')
         self.rtt_table = rtt_table or RTTTable()  # RTT表实例，用于存储RTT计算结果
         self.tables : list[list[bool, str]]
         self.values : list[list[ListBuffer]]
+        self.tcp_state : list[dict]
         self.net_monitor = monitor
     def add_packet(self, packet : Union[TCP]):
         if TCP in packet:
@@ -406,7 +408,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['SYN'] == 1 and existing_item['ACK'] == 0 and existing_item['seq'] == new_item['ack'] - 1 and existing_item['direction'] != new_item['direction']
                 condition2 = lambda existing_item, new_item: False
-                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -419,7 +421,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     # 处理Timestamp数据包
     def process_timestamp_packet(self, packet : TCP):
         '''
@@ -478,7 +480,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -490,7 +492,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
-                target_values.process_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
     def process_reset_packet(self, packet : TCP, additional_info :str = None):
         '''
         This function is used to process the reset packet.

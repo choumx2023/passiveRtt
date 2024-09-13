@@ -195,7 +195,7 @@ class CompressedIPNode:
             self.rtt_stats['max_rtt'] = max(self.rtt_stats['max_rtt'], child.rtt_stats['max_rtt'])
             if len(child.rtt_records) < 5:
                 continue
-            if self.network.prefixlen <= max_mask: # 只聚合到一定的子网掩码长度
+            if self.network.prefixlen >= max_mask: # 只聚合到一定的子网掩码长度
                 for key, values in child.rtt_records.items(): # 只收集有效的rtt记录
                     aggregated_rtt[key].extend(values)
         self.rtt_records = aggregated_rtt
@@ -247,7 +247,7 @@ class CompressedIPNode:
         self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
         max_mask = 24 if self.network.version == 4 else 24 * 4
         # 只记录到一定的子网掩码长度
-        if self.network.prefixlen <= max_mask:
+        if self.network.prefixlen >= max_mask:
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
         # 无论多大，都更新最大和最小值
@@ -271,6 +271,7 @@ class CompressedIPNode:
         递归记录活动。
         '''
         # Only check anomalies if flag is True
+        max_mask = 24 if self.network.version == 4 else 24 * 4
         key = (protocol, action)
         self.stats[key]['count'] += count
         if timestamp:
@@ -279,7 +280,7 @@ class CompressedIPNode:
             self.detect_protocols_anomalie(protocol)
 
         # Decide whether to check for anomalies only once at the initial call
-        if self.parent:
+        if self.parent and self.parent.network.prefixlen >= max_mask:
             self.parent.record_activity_recursive(protocol, action, count, timestamp, check_anomalies)
     def get_contain_ip_number(self):
         '''

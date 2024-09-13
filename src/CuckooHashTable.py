@@ -16,13 +16,21 @@ class ListBuffer:
     ListBuffer: a class that implements a list-based buffer with a fixed size
     
     '''
-    def __init__(self, size : int):
+    def __init__(self, size : int, tcp_state = False) -> None:
         '''
         params:
             size (int): The maximum number of elements that the buffer can hold
         '''
         self.size = size
         self.buffer = []
+        # 如果是TCP，需要记录TCP状态
+        if tcp_state:
+            self.tcp_state = {
+                'forward_seq': -1,
+                'forward_ack': -1,
+                'backward_seq': -1,
+                'backward_ack': -1     
+            }
     def add(self, item : dict) -> None:
         '''
         params:
@@ -39,6 +47,8 @@ class ListBuffer:
 
     def process_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
         '''
+        非TCP的处理函数
+        
         This function processes a new element in the buffer and returns the first matched element and ends the processing when the second condition is met. 
         
         parameters:
@@ -70,7 +80,40 @@ class ListBuffer:
             return None
         
         return first_matched_value
-    
+    def process_tcp_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
+        '''
+        TCP的处理函数 需要增加
+        This function processes a new element in the buffer and returns the first matched element and ends the processing when the second condition is met. 
+        
+        parameters:
+            new_element: value
+            condition1: a function that takes two arguments (existing_item, new_item) and returns a boolean value, indicating whether to remove the existing item
+            condition2: a function that takes two arguments (existing_item, new_item) and returns a boolean value, indicating whether to stop processing
+            is_add: a boolean value indicating whether to add the new element to the buffer
+        return:
+            first_matched_value: the first matched value in the buffer
+        '''
+        first_matched_value = None
+        # 从新到旧遍历缓冲区
+        i = len(self.buffer) - 1
+        while i >= 0:
+            current_element = self.buffer[i]
+
+            if condition2(current_element, new_element):
+                break  # 遇到满足条件2的元素，停止处理
+            if condition1(current_element, new_element):
+                if first_matched_value is None:
+                    first_matched_value =  copy.deepcopy(current_element)
+                self.buffer.pop(i)  # 移除满足条件1的元素
+            i -= 1
+
+        if is_add:
+            self.add(copy.deepcopy(new_element))  # 如果is_add为真，则添加新元素
+            #print('add new element', new_element)
+        if (first_matched_value is None) or (new_element['timestamp'] - first_matched_value['timestamp'] > 1 - 1e-3):
+            return None
+        
+        return first_matched_value
     # typical back-to-back TCP packets
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
@@ -184,7 +227,7 @@ class CuckooHashTable():
             for NTP : 'code'
             for DNS : 'query', 'response', 'id'
     '''
-    def __init__(self, initial_size = 100013, buffersize = 30) -> None:
+    def __init__(self, initial_size = 100013, buffersize = 30, type = 'Normal') -> None:
         '''
         Initialize the CuckooHashTable with the given initial size and buffer size
         parameter:
@@ -196,8 +239,12 @@ class CuckooHashTable():
         '''
         self.size = initial_size
         self.buffersize = buffersize
+        self.type = type
         self.tables = [[None] * self.size for _ in range(3)]# [None] or [key, stage_name]
-        self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
+        if self.type == 'TCP':
+            self.values = [[ListBuffer(buffersize, tcp_state=True) for _ in range(self.size)] for _ in range(3)]
+        else:
+            self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
         self.num_items = 0
         self.rehash_threshold = 0.6
         self.max_rehash_attempts = 5
@@ -256,7 +303,7 @@ class CuckooHashTable():
         old_tables = self.tables
         old_values = self.values
         self.tables = [[None] * self.size for _ in range(3)]
-        self.values = [[ListBuffer(self.buffersize) for _ in range(self.size)] for _ in range(3)]
+        self.values = [[ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize) for _ in range(self.size)] for _ in range(3)]
         self.num_items = 0  # Reset item count
 
         for table in range(3):
@@ -344,7 +391,7 @@ class CuckooHashTable():
                     current_value : dict
                     if self.tables[table_id][index] is None:
                         self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
                         self.values[table_id][index].add(current_value)
                         is_Lb = True
                         self.num_items += 1
@@ -356,7 +403,7 @@ class CuckooHashTable():
                         evicted_key = copy.deepcopy(self.tables[table_id][index])
                         evicted_value = copy.deepcopy(self.values[table_id][index])
                         self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
                         self.values[table_id][index].add(current_value)
                         current_key = evicted_key
                         path.append(current_key)
@@ -377,7 +424,7 @@ class CuckooHashTable():
                     # 替换并置换现有键
                     if self.tables[table_id][index] is None:
                         self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
                         for element in current_value.buffer:
                             self.values[table_id][index].add(element)
                         is_Lb = True
@@ -388,7 +435,7 @@ class CuckooHashTable():
                         evicted_key = copy.deepcopy(self.tables[table_id][index])
                         evicted_value = copy.deepcopy(self.values[table_id][index])
                         self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize)
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
                         for element in evicted_value.buffer:
                             self.values[table_id][index].add(element)
                         current_key = evicted_key
