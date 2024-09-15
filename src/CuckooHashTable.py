@@ -59,6 +59,7 @@ class ListBuffer:
         return:
             first_matched_value: the first matched value in the buffer
         '''
+        
         first_matched_value = None
         # 从新到旧遍历缓冲区
         i = len(self.buffer) - 1
@@ -93,9 +94,27 @@ class ListBuffer:
         return:
             first_matched_value: the first matched value in the buffer
         '''
+        
+        '''
+        value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
+             'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq,'direction' = 'forward'}
+        '''
+        self.tcp_state : dict
         first_matched_value = None
         # 从新到旧遍历缓冲区
         i = len(self.buffer) - 1
+        
+        # 重传的packet，一般是seq和ack是一样的
+        if new_element['direction'] == 'forward':
+            if new_element['ack'] <= self.tcp_state['forward_ack'] and new_element['seq'] <= self.tcp_state['forward_seq']:
+                return None
+            if new_element['ack'] >= self.tcp_state['forward_ack']:
+                self.tcp_state['forward_ack'] = new_element['ack']
+            if new_element['seq'] >= self.tcp_state['forward_seq']:
+                self.tcp_state['forward_seq'] = new_element['seq']
+        if new_element['direction'] == 'backward':
+            if new_element['ack']  <= self.tcp_state['backward_ack'] and new_element['seq'] <= self.tcp_state['backward_seq']:
+                return None
         while i >= 0:
             current_element = self.buffer[i]
 
@@ -128,6 +147,7 @@ class ListBuffer:
         return:
             first_matched_value: the first matched value in the buffer
         '''
+        self.tcp_state : dict
         first_match_value = None
         new_ack = new_element['ack']
         # 假设背靠背的TCP包全部是相同的ACK

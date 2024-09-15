@@ -14,6 +14,8 @@ import seaborn
 import math
 from collections import deque
 from ipaddress import IPv4Address, IPv6Address
+
+## 00成功 01失败
 class WelfordVariance:
     '''
     This class implements the Welford algorithm for calculating the variance of a stream of data points.
@@ -95,7 +97,7 @@ class WelfordVariance:
         self.remove_outdated(current_time)
         
         # 检查新数据点是否异常
-        if self.count >= 6 and newrtt - self.mean >  3 + 0.95 * math.sqrt(self.variance()):
+        if self.count >= 6 and newrtt - self.mean >  7 + 0.95 * math.sqrt(self.variance()):
             return True
         
         # 如果新数据点不是异常值，则更新统计数据
@@ -107,6 +109,11 @@ def default_state():
     return {
         'count': 0,
         'timestamps': []
+    }
+def default_rtt_state():
+    return {
+        'count': {},
+        'rtt_values': []
     }
 class CompressedIPNode:
     '''
@@ -375,10 +382,10 @@ class CompressedIPNode:
             #return f'\n{prefix1}  '.join([f'{rtt}ms, {timestamps}' for rtt, timestamps in rtts])
             return f'\n{prefix1}  '.join([', '.join(map(str, rtts[i:i+8])) for i in range(0, len(rtts), 8)])
         rtt_info = '\n'.join(
-            f'{prefix1}{protocol}**{pattern} RTT : \n  {prefix1}{format_output(rtts)}'
+            f'{prefix1}{protocol}**{pattern} RTT  count = {len(rtts)}: \n  {prefix1}{format_output(rtts)}'
             for (protocol, pattern), rtts in self.rtt_records.items()
             )
-        return f'{prefix}RTT Datas :\n {rtt_info}'
+        return f'{prefix}RTT Datas :\n{rtt_info}'
     def __anormalies__(self, prefix=''):
         '''
         params:
@@ -392,9 +399,9 @@ class CompressedIPNode:
             #return f'\n{prefix1}  '.join([f'{rtt}ms, {timestamps}' for rtt, timestamps in rtts])
             return f'\n{prefix1}  '.join([', '.join(map(str, rtts[i:i+8])) for i in range(0, len(rtts), 8)])
         rtt_info = '\n'.join(
-            f'{prefix1}{protocol}**{pattern} RTT : \n  {prefix1}{format_output(rtts)}'
+            f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
             for (protocol, pattern), rtts in self.anomalous_rtts_records.items())
-        return f'{prefix}Anomalies Data: \n {rtt_info}'
+        return f'{prefix}Anomalies Data: \n{rtt_info}'
     def __stats__(self, prefix=''):
         prefix1 = prefix + '  '
         if self.stats == {}:
@@ -403,7 +410,7 @@ class CompressedIPNode:
             # 将时间戳分段，每段最多包含5个时间戳
             return f'\n{prefix1}  '.join([', '.join(map(str, timestamps[i:i+10])) for i in range(0, len(timestamps), 10)])
         stats_info = '\n'.join(
-            f'{prefix1}{protocol}={action} : {details["count"]}\n {prefix1} {format_timestamps(details["timestamps"])}'
+            f'{prefix1}{protocol}={action} count = {details["count"]} :\n {prefix1} {format_timestamps(details["timestamps"])}'
             for (protocol, action), details in self.stats.items())
         return f'{prefix}Stats Data: \n{stats_info}'
 
@@ -594,6 +601,22 @@ class CompressedIPTrie:
             smallest_subnets.append(node)
         for child in node.children.values():
             self._collect_smallest_subnets_helper(child, smallest_subnets)
+    def waterfall_trees(self, node : CompressedIPNode):
+        if (node.network.prefixlen == 32 and node.network.version == 4) or (node.network.prefixlen == 128 and node.network.version == 6):
+            node.contain_ip_number = 1
+            total_length = 0
+            for value_list in node.rtt_records.values():
+                total_length += len(value_list)
+            if total_length > 5:
+                node.contain_rtt_ip_number = 1
+            return
+        node.contain_ip_number = 0
+        node.contain_rtt_ip_number = 0
+        for child in node.children.values():
+            self.waterfall_trees(child)        
+            node.contain_ip_number += child.contain_ip_number
+            node.contain_rtt_ip_number += child.contain_rtt_ip_number
+            
 class NetworkTrafficMonitor:
     def __init__(self, name = '', check_anomalies = 'True', logger = None):
         '''
@@ -696,6 +719,8 @@ class NetworkTrafficMonitor:
             return total_requests > threshold
         return False
     def print_trees(self):
+        self.ipv4_trie.waterfall_trees(self.ipv4_trie.root)
+        self.ipv6_trie.waterfall_trees(self.ipv6_trie.root)
         with open(f'{self.suffix}_tree.txt', 'w') as f:
             f.write("")  # Clear the contents of the file
         self.ipv4_trie.print_tree(file_path=f'{self.suffix}_tree.txt')
