@@ -233,7 +233,19 @@ def calc_listbuffer_weight(l1, timestamp) -> int:
             count += 1
     return count
 
-
+def default_tcp_state():
+    return {
+        'forward_range' : [-1, -1], # A -> B : [acked, sent]
+        'backward_range': [-1, -1], # B -> A : [acked, sent]
+        'forward_sack_range' : [-1, -1],
+        'backward_sack_range': [-1, -1],
+        'time_series': []
+        # 重传：
+        # 我发对面没发：我确认的不变，但是我放最远的发
+        # 对面发我没发：我的序号不变，但是我确认对面的
+        # 我发对面发： 自己控制的同时更新，并且不超过对面的最大值
+        # 丢包：非常规的确认 比如出现了我确认了比对面最远的还遥远的数据
+    }
 class CuckooHashTable():
     '''
     key: a dictionary containing the keys to be inserted,
@@ -261,10 +273,9 @@ class CuckooHashTable():
         self.buffersize = buffersize
         self.type = type
         self.tables = [[None] * self.size for _ in range(3)]# [None] or [key, stage_name]
+        self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
         if self.type == 'TCP':
-            self.values = [[ListBuffer(buffersize, tcp_state=True) for _ in range(self.size)] for _ in range(3)]
-        else:
-            self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
+            self.tcp_state = [ default_tcp_state() for _ in range(self.size)]
         self.num_items = 0
         self.rehash_threshold = 0.6
         self.max_rehash_attempts = 5

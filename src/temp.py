@@ -1,8 +1,8 @@
 
 def defalute_state():
     return {
-        'forward_range' : [-1, -1],
-        'backward_range': [-1, -1],
+        'forward_range' : [-1, -1], # A -> B : [acked, sent]
+        'backward_range': [-1, -1], # B -> A : [acked, sent]
         'forward_sack_range' : [-1, -1],
         'backward_sack_range': [-1, -1],
         'time_series': []
@@ -38,7 +38,7 @@ def calculate_tcp_states(packet : dict):
     nearest = ack - 1
     judge = 0
     if packet['direction'] == 'forward':
-        if seq_compare(furthest, states['forward_range'][0]):
+        if seq_compare(furthest, states['forward_range'][1]):
             states['forward_range'][0] = furthest
             judge += 1
         if seq_compare(nearest, states['backward_range'][0]):
@@ -54,19 +54,22 @@ def calculate_tcp_states(packet : dict):
             else:
                 states['time_series'].append('forward retransmission')
         elif judge == 1: # 只更新了自己的further range
-            states['time_series'].append('forward back to back')
+            states['time_series'].append('forward back to back candidate')
         elif judge == 2: # 只更新了对面的nearest range
             states['time_series'].append('forward ack')
         else: # 同时更新了两个range
             states['time_series'].append('forward normal')
-    
+    # 如果是反向的包
     else:
-        if seq_compare(furthest, states['backward_range'][0]):
+        # 使用seq_compare函数判断是否更新反方向发来的最远的字节序号
+        if seq_compare(furthest, states['backward_range'][1]):
             states['backward_range'][0] = furthest
             judge += 1
+        # 使用seq_compare函数判断是否更新正向发来的最近的字节序号
         if seq_compare(nearest, states['forward_range'][0]):
             states['forward_range'][0] = nearest
             judge += 2
+        # 如果judge == 1, 说明他没有更新反方向最远和正方向最近的字节序号，说明是syn包、heartbeat包或者重传包
         if judge == 0:
             if is_syn and is_ack:
                 states['time_series'].append('syn-ack')
@@ -76,10 +79,13 @@ def calculate_tcp_states(packet : dict):
                 states['time_series'].append('backward heartbeat')
             else:
                 states['time_series'].append('backward retransmission')
+        # 如果judge == 1, 说明他更新了反方向最远的字节序号，但是没有更新正方向最近的字节序号，有可能是背靠背
         elif judge == 1:
-            states['time_series'].append('backward back to back')
+            states['time_series'].append('backward back to back candidate')
+        # 如果judge == 2, 说明他更新了正方向最近的字节序号，但是没有更新反方向最远的字节序号，可能是纯ack包
         elif judge == 2:
             states['time_series'].append('backward ack')
+        # 如果同时更新了两个range，说明是正常的数据包
         else:
             states['time_series'].append('backward normal')
         

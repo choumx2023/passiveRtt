@@ -300,6 +300,19 @@ class NetworkTrafficTable(CuckooHashTable):
     def calculate_rtt(self, packet, prior_value):
         rtt = packet.time - prior_value['timestamp']
         return rtt
+def ddefault_tcp_state():
+    return {
+        'forward_range' : [-1, -1], # A -> B : [acked, sent]
+        'backward_range': [-1, -1], # B -> A : [acked, sent]
+        'forward_sack_range' : [-1, -1],
+        'backward_sack_range': [-1, -1],
+        'time_series': []
+        # 重传：
+        # 我发对面没发：我确认的不变，但是我放最远的发
+        # 对面发我没发：我的序号不变，但是我确认对面的
+        # 我发对面发： 自己控制的同时更新，并且不超过对面的最大值
+        # 丢包：非常规的确认 比如出现了我确认了比对面最远的还遥远的数据
+    }
 
 class TCPTrafficTable(CuckooHashTable):
     '''
@@ -480,7 +493,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value , *_= target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -638,7 +651,7 @@ class TCPTrafficTable(CuckooHashTable):
                 value['direction'] = 'backward'
             if ack_flag:
                 target_values = self.values[table_num][index]
-                prior_value, res = target_values.process_normal_tcp_element(new_element=value, is_add=True)
+                prior_value, res, _= target_values.process_normal_tcp_element(new_element=value, is_add=True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
