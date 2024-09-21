@@ -646,7 +646,7 @@ class TCPTrafficTable(CuckooHashTable):
             else:
                 if ack_flag:
                     target_values = self.values[table_num][index]
-                    prior_value, res, _= target_values.process_normal_tcp_element(new_element=value, is_add=True)
+                    prior_value, res = target_values.process_normal_tcp_element(new_element=value, is_add=True)
                     if prior_value is not None:
                         request_timestamp = prior_value['timestamp']
                         rtt = timestamp - request_timestamp

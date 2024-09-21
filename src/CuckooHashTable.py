@@ -98,18 +98,6 @@ class ListBuffer:
         first_matched_value = None
         # 从新到旧遍历缓冲区
         i = len(self.buffer) - 1
-        
-        # 重传的packet，一般是seq和ack是一样的
-        if new_element['direction'] == 'forward':
-            if new_element['ack'] <= self.tcp_state['forward_ack'] and new_element['seq'] <= self.tcp_state['forward_seq']:
-                return None
-            if new_element['ack'] >= self.tcp_state['forward_ack']:
-                self.tcp_state['forward_ack'] = new_element['ack']
-            if new_element['seq'] >= self.tcp_state['forward_seq']:
-                self.tcp_state['forward_seq'] = new_element['seq']
-        if new_element['direction'] == 'backward':
-            if new_element['ack']  <= self.tcp_state['backward_ack'] and new_element['seq'] <= self.tcp_state['backward_seq']:
-                return None
         while i >= 0:
             current_element = self.buffer[i]
 

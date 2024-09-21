@@ -69,7 +69,7 @@ def merge_monitors(file_list, output_dir):
 def main(pcap_file, output_dir):
     packets = rdpcap(pcap_file)
     logger = setup_logging('current')
-    monitor = NetworkTrafficMonitor(name='current', check_anomalies=True, logger=logger)
+    monitor = NetworkTrafficMonitor(name='current01', check_anomalies=True, logger=logger)
     traffic_table = NetworkTrafficTable(monitor=monitor) 
     tcp_table = TCPTrafficTable(monitor=monitor)
     icmp_table = NetworkTrafficTable(monitor=monitor)
