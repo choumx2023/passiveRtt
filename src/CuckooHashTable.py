@@ -23,14 +23,8 @@ class ListBuffer:
         '''
         self.size = size
         self.buffer = []
+        self.count = 0
         # 如果是TCP，需要记录TCP状态
-        if tcp_state:
-            self.tcp_state = {
-                'forward_seq': -1,
-                'forward_ack': -1,
-                'backward_seq': -1,
-                'backward_ack': -1     
-            }
     def add(self, item : dict) -> None:
         '''
         params:
@@ -42,7 +36,8 @@ class ListBuffer:
         if len(item) == 1:
             return
         self.buffer.append(item)
-        if len(self.buffer) > self.size:
+        self.count += 1
+        if self.count > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
 
     def process_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
@@ -233,19 +228,85 @@ def calc_listbuffer_weight(l1, timestamp) -> int:
             count += 1
     return count
 
-def default_tcp_state():
-    return {
-        'forward_range' : [-1, -1], # A -> B : [acked, sent]
-        'backward_range': [-1, -1], # B -> A : [acked, sent]
-        'forward_sack_range' : [-1, -1],
-        'backward_sack_range': [-1, -1],
-        'time_series': []
-        # 重传：
-        # 我发对面没发：我确认的不变，但是我放最远的发
-        # 对面发我没发：我的序号不变，但是我确认对面的
-        # 我发对面发： 自己控制的同时更新，并且不超过对面的最大值
-        # 丢包：非常规的确认 比如出现了我确认了比对面最远的还遥远的数据
-    }
+class TcpState():
+    def __init__(self) -> None:
+        self.forward_range = [-1, -1]
+        self.backward_range = [-1, -1]
+        self.forward_sack_range = [-1, -1]
+        self.backward_sack_range = [-1, -1]
+        self.time_series = []
+    def update_state(self, value : dict) -> None:
+        '''
+        value = {
+            'timestamp': packet.time,
+            'seq': packet[TCP].seq, 
+            'ack': packet[TCP].ack, 
+            'SYN':1, 
+            'ACK': ack_flag,
+            'FIN' : fin_flag, 
+            'RST' : rst_flag,
+            'PSH' : psh_flag,  
+            'length': tcp_payload_len, 
+            'next_seq': next_seq, 'direction': 'forward'
+            }
+
+        return
+            valid: a boolean value indicating whether the packet is valid
+            type: a string indicating the type of the packet
+        '''
+        judge = 0
+        is_valid, packet_type = True, None
+        if value['direction'] == 'forward':
+            if value['next_seq'] > self.forward_range[1]:
+                self.forward_range[1] = value['next_seq']
+                judge += 1
+            if value['ack'] > self.backward_range[0]:
+                self.backward_range[0] = value['ack']
+                judge += 2
+
+            # 如果没有更新，判断是不是重传
+            if judge == 0:
+                if value['SYN'] and value['ACK']:
+                    packet_type = 'SYN-ACK'
+                elif value['SYN']:
+                    packet_type = 'SYN'
+                elif value['length'] == 0:
+                    packet_type, is_valid= 'Heartbeat', False
+                else:
+                    packet_type, is_valid = 'Retransmission', False
+            elif judge == 1:
+                packet_type = 'Back-to-Back'
+            elif judge == 2:
+                packet_type = 'Pure ACK'
+            else:
+                packet_type = 'Normal'
+        else:
+            if value['next_seq'] > self.backward_range[1]:
+                self.backward_range[1] = value['next_seq']
+                judge += 1
+            if value['ack'] > self.forward_range[0]:
+                self.forward_range[0] = value['ack']
+                judge += 2
+
+            if judge == 0:
+                if value['SYN'] and value['ACK']:
+                    packet_type = 'SYN-ACK'
+                elif value['SYN']:
+                    packet_type = 'SYN'
+                elif value['length'] == 0:
+                    packet_type, is_valid = 'Heartbeat', False
+                else:
+                    packet_type, is_valid = 'Retransmission', False
+            elif judge == 1:
+                packet_type = 'Back-to-Back'
+            elif judge == 2:
+                packet_type = 'Pure ACK'
+            else:
+                packet_type = 'Normal'
+        return is_valid, packet_type
+    def __str__(self) -> str:
+        return f"TcpState(forward_range={self.forward_range}, backward_range={self.backward_range})"
+
 class CuckooHashTable():
     '''
     key: a dictionary containing the keys to be inserted,
@@ -275,7 +336,7 @@ class CuckooHashTable():
         self.tables = [[None] * self.size for _ in range(3)]# [None] or [key, stage_name]
         self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
         if self.type == 'TCP':
-            self.tcp_state = [ default_tcp_state() for _ in range(self.size)]
+            self.tcp_state =[ [ TcpState() for _ in range(self.size)] for _ in range(3)]
         self.num_items = 0
         self.rehash_threshold = 0.6
         self.max_rehash_attempts = 5
