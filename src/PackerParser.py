@@ -43,7 +43,7 @@ class NetworkTrafficTable(CuckooHashTable):
         self.values : list[list[ListBuffer]]
         self.tcp_state : list[TcpState]
         self.net_monitor = monitor
-    
+
     def replace_monitor(self, monitor : NetworkTrafficMonitor):
         '''
         To decrease the complexity of the append function, we update the summary monitor and replace the monitor.
@@ -317,6 +317,17 @@ class TCPTrafficTable(CuckooHashTable):
         self.values : list[list[ListBuffer]]
         self.tcp_state : list[list[dict]]
         self.net_monitor = monitor
+    def delete_entry(self, table_num, index):
+        '''
+        This function deletes the element from the table.
+        params:
+            table_num (int): The table number.
+            index (int): The index of the element to delete.
+        '''
+        self.values[table_num][index] = ListBuffer(self.buffersize)
+        self.tables[table_num][index] = None
+        if self.type == 'TCP':
+            self.tcp_state[table_num][index].clear()
     def add_packet(self, packet : Union[TCP]):
         if TCP in packet:
             tcp_flags = packet[TCP].flags
@@ -391,6 +402,9 @@ class TCPTrafficTable(CuckooHashTable):
         
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         table_num, index = self.lookup(key_temp)
+        if syn_flag and not ack_flag and table_num is not None:
+            self.delete_entry(table_num, index)
+            table_num = None
         if table_num is None:
             self.insert(key_temp)
         table_num, index = self.lookup(key)
@@ -458,7 +472,6 @@ class TCPTrafficTable(CuckooHashTable):
         # 序列号计算，包括SYN和FIN标志的影响
         flags_count = int(syn_flag) + int(fin_flag)
         next_seq = packet[TCP].seq + tcp_payload_len + flags_count
-
         # 序列号计算
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         ts_val, ts_ecr = self.extract_tcp_options(packet)
@@ -473,6 +486,9 @@ class TCPTrafficTable(CuckooHashTable):
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            if fin_flag:
+                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
+            
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
@@ -549,6 +565,7 @@ class TCPTrafficTable(CuckooHashTable):
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
@@ -612,9 +629,8 @@ class TCPTrafficTable(CuckooHashTable):
         # IP数据负载长度 - IP头部长度 - TCP头部长度
         tcp_payload_len = ip_total_length - ip_header_len - tcp_header_len
         # 序列号计算
-        flags_count = int(syn_flag) + int(fin_flag)
+        flags_count = syn_flag or fin_flag
         next_seq = packet[TCP].seq + tcp_payload_len + flags_count
-
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         timestamp = packet.time
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
@@ -632,6 +648,9 @@ class TCPTrafficTable(CuckooHashTable):
         table_num, index = self.lookup(key)
         target_values: ListBuffer
         if table_num is not None:
+            if fin_flag:
+                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
+            
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:

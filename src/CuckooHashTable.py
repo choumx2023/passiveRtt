@@ -180,7 +180,12 @@ class ListBuffer:
         if GAP_flag:
             res = "GAP"
         return first_match_value, res
-                        
+    def clear(self) -> None:
+        '''
+        This function clears the buffer
+        '''
+        self.buffer = []
+        self.count = 0             
             
     def print_lb(self):
         for item in self.buffer:
@@ -218,6 +223,12 @@ def calc_listbuffer_weight(l1, timestamp) -> int:
 
 class TcpState():
     def __init__(self) -> None:
+        self.forward_range = [-1, -1]
+        self.backward_range = [-1, -1]
+        self.forward_sack_range = [-1, -1]
+        self.backward_sack_range = [-1, -1]
+        self.time_series = []
+    def clear(self) -> None:
         self.forward_range = [-1, -1]
         self.backward_range = [-1, -1]
         self.forward_sack_range = [-1, -1]
