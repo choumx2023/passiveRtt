@@ -16,49 +16,56 @@ from collections import deque
 from ipaddress import IPv4Address, IPv6Address
 
 ## 00成功 01失败
-class WelfordVariance:
-    '''
-    This class implements the Welford algorithm for calculating the variance of a stream of data points.
-    
-    '''
-    def __init__(self, time_window : int = 1200, max_count : int = 120):
-        '''
-        params:
-            time_window: 一个时间窗口，用于限制数据点的时间范围。
-            max_count: 一个最大计数，用于限制数据点的数量。
-        设置时间窗口和最大计数，以便在超出时间窗口或计数时移除数据点。
-        '''
-        self.count = 0
-        self.mean = 0
-        self.M2 = 0
-        self.time_window = time_window
-        self.max_count = max_count
-        self.data = deque()
-        self.data : deque[tuple[float, float]]
-    def update(self, x : float, timestamp : float):
-        '''
-        params:
-            x: 新的数据点 
-            timestamp: 时间戳
-        更新统计数据，包括计数、均值和方差。
-        '''
-        self.data.append((x, timestamp))
-        self.count += 1
-        delta = x - self.mean
-        self.mean += delta / self.count
-        delta2 = x - self.mean
-        self.M2 += delta * delta2
 
-    def remove(self, x : float):
-        '''
-        params:
-            x: 要移除的数据点
-        移除指定的数据点，并更新统计数据。
-        '''
+class WelfordVariance:
+    def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
+        self.time_window = time_window  # 数据点有效的时间窗口
+        self.max_count = max_count      # 数据点的最大数量
+        self.initial_limit = initial_limit  # 初始数据点的数量，这些点不计入统计
+        self.data = deque()  # 存储所有有效数据点
+        self.initial_data = deque()  # 专门存储初始数据点
+        
+        self.count = 0  # 用于统计的数据点数量
+        self.mean = 0   # 当前的均值
+        self.M2 = 0     # 用于计算方差的中间变量
+        self.recorded_count = 0  # 已记录的数据点数量
+        
+    def update(self, x: float, timestamp: float):
+        """更新统计数据，包括添加新数据点。"""
+        # 判断是否仍在收集初始数据点
+        if self.recorded_count < self.initial_limit:
+            self.initial_data.append((x, timestamp))
+            self.recorded_count += 1
+            if len(self.initial_data) == self.initial_limit:
+                # 初始数据点收集完毕，开始计算均值
+                self.init_mean = sum(x for x, _ in self.initial_data) / self.initial_limit
+                self.init_variance = sum((x - self.init_mean) ** 2 for x, _ in self.initial_data) / (self.initial_limit - 1)
+        elif (self.recorded_count <= 2 * self.initial_limit and abs(x - self.init_mean) < min(20, max(15 , 0.95 * math.sqrt(self.init_variance), math.sqrt(self.init_variance)))) or self.recorded_count > 2 * self.initial_limit:
+            # 更新统计计数和数据
+            self.data.append((x, timestamp))
+            self.count += 1
+            self.recorded_count += 1
+            delta = x - self.mean
+            self.mean += delta / self.count
+            delta2 = x - self.mean
+            self.M2 += delta * delta2
+            
+
+    def variance(self):
+        """计算并返回当前的方差。"""
+        if self.count < 2:
+            return float('nan')  # 数据点不足以计算方差
+        return self.M2 / (self.count - 1)
+
+    def remove_outdated(self, current_time: float):
+        """移除过时的数据点，根据时间窗口判断。"""
+        while self.data and (current_time - self.data[0][1]) > self.time_window:
+            self.remove(self.data.popleft()[0])
+
+    def remove(self, x: float):
+        """移除指定的数据点，并更新统计。"""
         if self.count <= 1:
-            self.count = 0
-            self.mean = 0
-            self.M2 = 0
+            self.reset()
         else:
             self.count -= 1
             delta = x - self.mean
@@ -66,45 +73,29 @@ class WelfordVariance:
             delta2 = x - self.mean
             self.M2 -= delta * delta2
 
-    def variance(self):
-        '''
-        params:
-            None
-        返回方差。
-        
-        '''
-        if self.count < 2:
-            return float('nan')
-        return self.M2 / (self.count - 1)
+    def reset(self):
+        """重置所有统计信息。"""
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.data.clear()
+        self.initial_data.clear()
 
     def str_variance(self):
+        """返回当前统计信息的字符串表示。"""
         return f'Count: {self.count}, Variance: {self.variance()}, Mean: {self.mean}'
 
-    def remove_outdated(self, current_time : float):
-        '''
-        params:
-            current_time: 当前时间戳
-        移除超出时间窗口的数据点。
-        '''
-        # 移除超出时间窗口的数据点
-        while self.time_window and self.data and (current_time - self.data[0][1]) > self.time_window:
-            old_value, _ = self.data.popleft()
-            self.remove(old_value)
-
-    def check_anomalies(self, newrtt : float, timestamp : float):
-        current_time = timestamp
-        # 移除超出时间窗口的数据点
-        self.remove_outdated(current_time)
-        
-        # 检查新数据点是否异常
-        if self.count >= 6 and newrtt - self.mean >  min(20, max(15, 7 + 0.95 * math.sqrt(self.variance()) )):
-            return True
-        
-        # 如果新数据点不是异常值，则更新统计数据
+    def check_anomalies(self, newrtt: float, timestamp: float):
+        """检查新数据点是否异常，并移除过时数据。"""
+        self.remove_outdated(timestamp)
+        if self.count >= 6:
+            adjusted_variance = self.variance()
+            if adjusted_variance is not float('nan'):
+                threshold = min(20, max(10, 0.95 * math.sqrt(adjusted_variance)))
+                if newrtt - self.mean > threshold:
+                    return True
         self.update(newrtt, timestamp)
         return False
-
-# 使用示例
 def default_state():
     return {
         'count': 0,
@@ -231,15 +222,16 @@ class CompressedIPNode:
             self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
-            if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
-                self.rtt_stats['min_rtt'] = rtt
-            if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
-                self.rtt_stats['max_rtt'] = rtt
+            if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
+                if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
+                    self.rtt_stats['min_rtt'] = rtt
+                if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
+                    self.rtt_stats['max_rtt'] = rtt
                 
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             # 父母就不检查了，向上传递
-            if self.parent and len(self.all_rtt_records) > 5:
+            if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
 
     def upstream_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float):
@@ -259,11 +251,14 @@ class CompressedIPNode:
         if self.network.prefixlen >= max_mask:
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
+        self.rtt_WelfordVariance.update(rtt, timestamp)
         # 无论多大，都更新最大和最小值
-        if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
-            self.rtt_stats['min_rtt'] = rtt
-        if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
-            self.rtt_stats['max_rtt'] = rtt
+        
+        if self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
+            if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
+                self.rtt_stats['min_rtt'] = rtt
+            if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
+                self.rtt_stats['max_rtt'] = rtt
         if self.parent:
             self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
     
@@ -414,6 +409,8 @@ class CompressedIPNode:
             f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
             for (protocol, pattern), rtts in self.anomalous_rtts_records.items())
         return f'{prefix}Anomalies Data: \n{rtt_info}'
+    
+    
     def __stats__(self, prefix=''):
         prefix1 = prefix + '  '
         def format_timestamps(timestamps):
@@ -422,10 +419,13 @@ class CompressedIPNode:
         if (self.network.prefixlen >= 25 and self.network.version == 4) or (self.network.prefixlen >= 97 and self.network.version == 6):
             if self.stats == {}:
                 return f'{prefix}Stats Data: \n{prefix1}No stats data'
+            accumulated_stats = '\n'.join(
+            f'{prefix1}{protocol}={action} count = {details["count"]} :'
+            for (protocol, action), details in self.stats.items())
             stats_info = '\n'.join(
             f'{prefix1}{protocol}={action} count = {details["count"]} :\n {prefix1} {format_timestamps(details["timestamps"])}'
             for (protocol, action), details in self.stats.items())
-            return f'{prefix}Stats Data: \n{prefix1}No stats data'
+            return f'{prefix}Stats Data: \n{accumulated_stats}\n{prefix}details : \n{stats_info}'
         else:
             if self.accumulate_normal_stats == {}:
                 return f'{prefix}Stats Data: \n{prefix1}No stats data'
@@ -433,6 +433,7 @@ class CompressedIPNode:
             f'{prefix1}{protocol}={action} count = {count} :\n {prefix1} {format_timestamps([])}'
             for (protocol, action), count in self.accumulate_normal_stats.items())
         return f'{prefix}Stats Data: \n{stats_info}'
+
 
     def __basic__(self, prefix=''):
         if prefix:

@@ -88,5 +88,167 @@ def calculate_tcp_states(packet : dict):
         # 如果同时更新了两个range，说明是正常的数据包
         else:
             states['time_series'].append('backward normal')
+        class WelfordVariance:
+    '''
+    This class implements the Welford algorithm for calculating the variance of a stream of data points.
+    It handles an initial buffer of data points that are not used in anomaly detection until the buffer is filled.
+    '''
+    def __init__(self, time_window: int = 1200, max_count: int = 120, initial_limit: int = 10):
+        '''
+        params:
+            time_window: 时间窗口，用于限制数据点的时间范围。
+            max_count: 最大计数，用于限制数据点的数量。
+            initial_limit: 初始数据点限制，这些数据点将不用于异常检测直到它们的数量超过此限制。
+        '''
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.time_window = time_window
+        self.max_count = max_count
+        self.initial_limit = initial_limit
+        self.initial_count = 0
+        self.data = deque()
+    def update(self, x: float, timestamp: float):
+        '''
+        添加新的数据点并更新统计数据。
+        '''
+        self.data.append((x, timestamp))
+        # 只有当数据点数量超过初始限制时，才更新统计信息
+        if self.initial_count >= self.initial_limit:
+            self.count += 1
+            delta = x - self.mean
+            self.mean += delta / self.count
+            delta2 = x - self.mean
+            self.M2 += delta * delta2
+        else:
+            self.initial_count += 1
+
+    def remove(self, x: float):
+        '''
+        移除指定的数据点并更新统计数据。
+        '''
+        if self.count <= 1:
+            self.count = 0
+            self.mean = 0
+            self.M2 = 0
+        else:
+            self.count -= 1
+            delta = x - self.mean
+            self.mean -= delta / self.count
+            delta2 = x - self.mean
+            self.M2 -= delta * delta2
+
+    def variance(self):
+        '''
+        返回当前的方差。
+        '''
+        if self.count < 2:
+            return float('nan')
+        return self.M2 / (self.count - 1)
+
+    def remove_outdated(self, current_time: float):
+        '''
+        移除超出时间窗口的数据点。
+        '''
+        while self.data and (current_time - self.data[0][1]) > self.time_window:
+            old_value, _ = self.data.popleft()
+            if self.initial_count >= self.initial_limit:
+                self.remove(old_value)
+            else:
+                self.initial_count -= 1
+
+    def check_anomalies(self, newrtt: float, timestamp: float):
+        '''
+        检查新数据点是否异常，并移除过时数据。
+        '''
+        self.remove_outdated(timestamp)
+
+        if self.count >= 6 and newrtt - self.mean > min(20, max(15, 0.95 * math.sqrt(self.variance()))):
+            return True
         
-            
+        self.update(newrtt, timestamp)
+        return False
+    def str_variance(self):
+        if self.initial_count < self.initial_limit:
+            return 'Not enough data points for variance calculation'
+        if self.count < 2:
+            return 'Not enough data points for variance calculation'
+        variance = self.variance()
+        std_dev = math.sqrt(variance) if not math.isnan(variance) else 0
+        lower_bound = max(self.mean - std_dev, 0)
+        upper_bound = self.mean + std_dev
+        
+        return f'Count: {self.count}, Variance: {variance}, Mean: {self.mean}, Chebyshev(1 sigma): [{lower_bound}, {upper_bound}]'
+
+
+
+
+from collections import deque
+import math
+
+class WelfordVariance:
+    def __init__(self, time_window: int = 1200, max_count: int = 120, initial_limit: int = 6):
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.time_window = time_window
+        self.max_count = max_count
+        self.initial_limit = initial_limit
+        self.initial_data = deque()  # 存储前六个数据点
+        self.data = deque()  # 存储所有数据点
+
+    def update(self, x: float, timestamp: float):
+        self.data.append((x, timestamp))
+
+        # 更新所有数据点的统计信息
+        self.count += 1
+        delta = x - self.mean
+        self.mean += delta / self.count
+        delta2 = x - self.mean
+        self.M2 += delta * delta2
+
+        # 仅存储前六个数据点
+        if len(self.initial_data) < self.initial_limit:
+            self.initial_data.append((x, delta, delta2))
+
+    def variance(self):
+        if self.count - len(self.initial_data) < 2:
+            return float('nan')
+        
+        adjusted_count = self.count - len(self.initial_data)
+        adjusted_M2 = self.M2
+        adjusted_mean = self.mean
+
+        # 从M2中移除前六个数据点的贡献
+        for x, delta, delta2 in self.initial_data:
+            adjusted_mean -= delta / adjusted_count
+            adjusted_M2 -= delta * delta2
+            adjusted_count -= 1
+
+        return adjusted_M2 / (adjusted_count - 1)
+
+    def remove_outdated(self, current_time: float):
+        while self.data and (current_time - self.data[0][1]) > self.time_window:
+            old_value, _ = self.data.popleft()
+            self.remove(old_value)
+
+    def remove(self, x: float):
+        if self.count <= 1:
+            self.reset()
+        else:
+            self.count -= 1
+            delta = x - self.mean
+            self.mean -= delta / self.count
+            delta2 = x - self.mean
+            self.M2 -= delta * delta2
+            if self.initial_data and x == self.initial_data[0][0]:
+                self.initial_data.popleft()
+
+    def reset(self):
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.initial_data.clear()
+
+    def str_variance(self):
+        return f'Count: {self.count - len(self.initial_data)}, Variance: {self.variance()}, Mean: {self.mean}'
