@@ -97,7 +97,7 @@ class WelfordVariance:
         self.remove_outdated(current_time)
         
         # 检查新数据点是否异常
-        if self.count >= 6 and newrtt - self.mean >  7 + 0.95 * math.sqrt(self.variance()):
+        if self.count >= 6 and newrtt - self.mean >  min(20, max(15, 7 + 0.95 * math.sqrt(self.variance()) )):
             return True
         
         # 如果新数据点不是异常值，则更新统计数据
@@ -161,6 +161,8 @@ class CompressedIPNode:
             'min_rtt': float('inf'),
             'max_rtt': float('-inf'), 
         }
+        self.accumulate_normal_stats = defaultdict(int)
+        self.accumulate_rtt_stats = defaultdict(int)
         self.rtt_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
     def aggregate_stats(self):
         '''
@@ -376,14 +378,24 @@ class CompressedIPNode:
 
     def __rtt__(self, prefix=''):
         prefix1 = prefix + '  '
-        if self.rtt_records == {}:
-            return f'{prefix}RTT Datas : \n{prefix1}No RTT data'
         def format_output(rtts):
             #return f'\n{prefix1}  '.join([f'{rtt}ms, {timestamps}' for rtt, timestamps in rtts])
             return f'\n{prefix1}  '.join([', '.join(map(str, rtts[i:i+8])) for i in range(0, len(rtts), 8)])
-        rtt_info = '\n'.join(
+
+        if (self.network.prefixlen >= 25 and self.network.version == 4) or (self.network.prefixlen >= 97 and self.network.version == 6):
+            if self.rtt_records == {}:
+                return f'{prefix}RTT Datas : \n{prefix1}No RTT data'
+            rtt_info = '\n'.join(
             f'{prefix1}{protocol}**{pattern} RTT  count = {len(rtts)}: \n  {prefix1}{format_output(rtts)}'
             for (protocol, pattern), rtts in self.rtt_records.items()
+            )
+            return f'{prefix}RTT Datas :\n{rtt_info}'
+        else:
+            if self.accumulate_rtt_stats == {}:
+                return f'{prefix}RTT Datas : \n{prefix1}No RTT data'
+            rtt_info = '\n'.join(
+            f'{prefix1}{protocol}**{pattern} RTT count = {count}:\n  {prefix1}{format_output([])}'
+            for (protocol, pattern), count in self.accumulate_rtt_stats.items()
             )
         return f'{prefix}RTT Datas :\n{rtt_info}'
     def __anormalies__(self, prefix=''):
@@ -404,14 +416,22 @@ class CompressedIPNode:
         return f'{prefix}Anomalies Data: \n{rtt_info}'
     def __stats__(self, prefix=''):
         prefix1 = prefix + '  '
-        if self.stats == {}:
-            return f'{prefix}Stats Data: \n{prefix1}No stats data'
         def format_timestamps(timestamps):
             # 将时间戳分段，每段最多包含5个时间戳
             return f'\n{prefix1}  '.join([', '.join(map(str, timestamps[i:i+10])) for i in range(0, len(timestamps), 10)])
-        stats_info = '\n'.join(
+        if (self.network.prefixlen >= 25 and self.network.version == 4) or (self.network.prefixlen >= 97 and self.network.version == 6):
+            if self.stats == {}:
+                return f'{prefix}Stats Data: \n{prefix1}No stats data'
+            stats_info = '\n'.join(
             f'{prefix1}{protocol}={action} count = {details["count"]} :\n {prefix1} {format_timestamps(details["timestamps"])}'
             for (protocol, action), details in self.stats.items())
+            return f'{prefix}Stats Data: \n{prefix1}No stats data'
+        else:
+            if self.accumulate_normal_stats == {}:
+                return f'{prefix}Stats Data: \n{prefix1}No stats data'
+            stats_info = '\n'.join(
+            f'{prefix1}{protocol}={action} count = {count} :\n {prefix1} {format_timestamps([])}'
+            for (protocol, action), count in self.accumulate_normal_stats.items())
         return f'{prefix}Stats Data: \n{stats_info}'
 
     def __basic__(self, prefix=''):
@@ -612,11 +632,18 @@ class CompressedIPTrie:
             return
         node.contain_ip_number = 0
         node.contain_rtt_ip_number = 0
+        is_bigger_network = (node.network.prefixlen <= 24 and node.network.version == 4) or (node.network.prefixlen <= 96 and node.network.version == 6)
         for child in node.children.values():
             self.waterfall_trees(child)        
             node.contain_ip_number += child.contain_ip_number
             node.contain_rtt_ip_number += child.contain_rtt_ip_number
-            
+            if is_bigger_network:
+                for (protocol, pattern), rtts in child.rtt_records.items():
+                    node.accumulate_rtt_stats[(protocol, pattern)] += len(rtts)
+                for (protocol, action), details in child.stats.items():
+                    node.accumulate_normal_stats[(protocol, action)] += details['count']
+                for (protocol, pattern), rtts in child.anomalous_rtts_records.items():
+                    node.accumulate_rtt_stats[('Anomalous '+protocol, pattern)] += len(rtts)
 class NetworkTrafficMonitor:
     def __init__(self, name = '', check_anomalies = 'True', logger = None):
         '''

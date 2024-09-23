@@ -67,9 +67,12 @@ def merge_monitors(file_list, output_dir):
     # 递归继续合并
     return merge_monitors(new_file_list, output_dir)
 def main(pcap_file, output_dir):
+    pcap_name = pcap_file.split('/')[-1].split('.')[0]
+    output_dir = os.path.join(output_dir,  pcap_name)
+    os.makedirs(output_dir, exist_ok=True)
     packets = rdpcap(pcap_file)
     logger = setup_logging('current')
-    monitor = NetworkTrafficMonitor(name='current01', check_anomalies=True, logger=logger)
+    monitor = NetworkTrafficMonitor(name=pcap_name, check_anomalies=True, logger=logger)
     traffic_table = NetworkTrafficTable(monitor=monitor) 
     tcp_table = TCPTrafficTable(monitor=monitor)
     icmp_table = NetworkTrafficTable(monitor=monitor)
@@ -110,7 +113,7 @@ def main(pcap_file, output_dir):
     if count % 100000 != 0:
         part_number += 1
         save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
-    os.makedirs(output_dir, exist_ok=True)
+    
     ## 读取各个part的monitor，合并成一个summary monitor
     summary_monitor = NetworkTrafficMonitor(name='summary', check_anomalies=True, logger=logger)
     # 自下而上合并
