@@ -669,7 +669,10 @@ class TCPTrafficTable(CuckooHashTable):
                     if prior_value is not None:
                         request_timestamp = prior_value['timestamp']
                         rtt = timestamp - request_timestamp
-                        self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt*1000), float(timestamp))
+                        if prior_value['SYN'] == 1:
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'SYN-ACK', float(rtt*1000), float(timestamp))
+                        else:
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt*1000), float(timestamp))
                         # 更新RTT表
                         if self.rtt_table:
                                 self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, res, direction=value['direction'])

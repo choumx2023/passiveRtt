@@ -24,7 +24,6 @@ class WelfordVariance:
         self.initial_limit = initial_limit  # 初始数据点的数量，这些点不计入统计
         self.data = deque()  # 存储所有有效数据点
         self.initial_data = deque()  # 专门存储初始数据点
-        
         self.count = 0  # 用于统计的数据点数量
         self.mean = 0   # 当前的均值
         self.M2 = 0     # 用于计算方差的中间变量
