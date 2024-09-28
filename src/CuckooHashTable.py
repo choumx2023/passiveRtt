@@ -120,7 +120,7 @@ class ListBuffer:
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
     # 3. S->C: seq = y, ack = x+50
-    def process_normal_tcp_element(self, new_element : dict, is_add : bool) -> typing.Union[list, bool]:
+    def process_normal_tcp_element(self, new_element : dict ,is_add : bool, mtu : list = [1000, 1000]) -> typing.Union[list, bool]:
         '''
         This function processes a new element in the buffer and returns the first matched element, aiming to detect normal/back-to-back TCP packets 
         
@@ -156,7 +156,7 @@ class ListBuffer:
                         count += 1
                     else:# 验证是不是有两个及以上的包
                         # 如果不止发送了一个packet，要保留两个
-                        if abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= maxium_length and current_element['length'] > 1000:
+                        if abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= mtu[new_element['direction'] == 'forward'] and current_element['length'] > 1000:
                             maxium_length = current_element['length']
                             count += 1
                             self.buffer.pop(i)
@@ -174,7 +174,7 @@ class ListBuffer:
             return None, None
         if not PSH_flag:# 没有psh。也没有back-to-back
             return None, None
-        res = "BTB"
+        res = "Back-to-Back"
         if count < 2 and PSH_flag:
             res = "PSH"
         if GAP_flag:
@@ -228,12 +228,14 @@ class TcpState():
         self.forward_sack_range = [-1, -1]
         self.backward_sack_range = [-1, -1]
         self.time_series = []
+        self.max_length = [-1, -1]
     def clear(self) -> None:
         self.forward_range = [-1, -1]
         self.backward_range = [-1, -1]
         self.forward_sack_range = [-1, -1]
         self.backward_sack_range = [-1, -1]
         self.time_series = []
+        self.max_length = [-1, -1] # forward, backward
     def update_state(self, value : dict) -> None:
         '''
         value = {
@@ -255,6 +257,10 @@ class TcpState():
         '''
         judge = 0
         is_valid, packet_type = True, None
+        if value['direction'] == 'forward':
+            self.max_length[0] = max(self.max_length[0], value['length'])
+        else:
+            self.max_length[1] = max(self.max_length[1], value['length'])
         if value['direction'] == 'forward':
             if value['next_seq'] > self.forward_range[1]:
                 self.forward_range[1] = value['next_seq']
@@ -297,7 +303,7 @@ class TcpState():
                 else:
                     packet_type, is_valid = 'Retransmission', False
             elif judge == 1:
-                packet_type = 'Back-to-Back'
+                packet_type = 'Back-to-Back candidate'
             elif judge == 2:
                 packet_type = 'Pure ACK'
             else:

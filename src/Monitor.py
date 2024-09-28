@@ -29,6 +29,7 @@ class WelfordVariance:
         self.M2 = 0     # 用于计算方差的中间变量
         self.recorded_count = 0  # 已记录的数据点数量
         
+    #  60 50 50 70 200
     def update(self, x: float, timestamp: float):
         """更新统计数据，包括添加新数据点。"""
         # 判断是否仍在收集初始数据点
@@ -49,7 +50,6 @@ class WelfordVariance:
             delta2 = x - self.mean
             self.M2 += delta * delta2
             
-
     def variance(self):
         """计算并返回当前的方差。"""
         if self.count < 2:
@@ -273,6 +273,7 @@ class CompressedIPNode:
             check_anomalies: 是否检查异常
         递归记录活动。
         '''
+        
         # Only check anomalies if flag is True
         max_mask = 24 if self.network.version == 4 else 24 * 4
         key = (protocol, action)
@@ -388,7 +389,7 @@ class CompressedIPNode:
             if self.accumulate_rtt_stats == {}:
                 return f'{prefix}RTT Datas : \n{prefix1}No RTT data'
             rtt_info = '\n'.join(
-            f'{prefix1}{protocol}**{pattern} RTT count = {count}:\n  {prefix1}{format_output([])}'
+            f'{prefix1}{protocol}**{pattern} RTT count = {count}:  {prefix1}{format_output([])}'
             for (protocol, pattern), count in self.accumulate_rtt_stats.items()
             )
         return f'{prefix}RTT Datas :\n{rtt_info}'
@@ -429,7 +430,7 @@ class CompressedIPNode:
             if self.accumulate_normal_stats == {}:
                 return f'{prefix}Stats Data: \n{prefix1}No stats data'
             stats_info = '\n'.join(
-            f'{prefix1}{protocol}={action} count = {count} :\n {prefix1} {format_timestamps([])}'
+            f'{prefix1}{protocol}={action} count = {count} : {prefix1} {format_timestamps([])}'
             for (protocol, action), count in self.accumulate_normal_stats.items())
         return f'{prefix}Stats Data: \n{stats_info}'
 

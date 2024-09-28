@@ -582,7 +582,7 @@ class TCPTrafficTable(CuckooHashTable):
                     
                     if self.rtt_table:
                         if not b2b_flag:
-                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'PSH', direction=value['direction'])
+                            self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'RST', direction=value['direction'])
                             self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'RST', float(rtt*1000), float(timestamp))
                         else:
                             self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'Normal', direction=value['direction'])
@@ -658,8 +658,7 @@ class TCPTrafficTable(CuckooHashTable):
             else:
                 value['direction'] = 'backward'
             is_valid, packet_type = self.tcp_state[table_num][index].update_state(value)
-            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', packet_type, 1, float(timestamp))
-            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', packet_type, 1, float(timestamp))
+
             if not is_valid:
                 return
             else:
@@ -671,8 +670,22 @@ class TCPTrafficTable(CuckooHashTable):
                         rtt = timestamp - request_timestamp
                         if prior_value['SYN'] == 1:
                             self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'SYN-ACK', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
+                        elif res == 'PSH':
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'PSH', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'PSH', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'PSH', 1, float(timestamp))
+                        elif res == 'Back-to-Back':
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Back-to-Back', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Back-to-Back', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Back-to-Back', 1, float(timestamp))
+                            
                         else:
+                            return
                             self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Normal', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Normal', 1, float(timestamp))
                         # 更新RTT表
                         if self.rtt_table:
                                 self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, res, direction=value['direction'])
