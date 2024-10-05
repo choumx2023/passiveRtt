@@ -50,6 +50,9 @@ class WelfordVariance:
             delta2 = x - self.mean
             self.M2 += delta * delta2
             
+            
+            
+            
     def variance(self):
         """计算并返回当前的方差。"""
         if self.count < 2:
@@ -154,6 +157,7 @@ class CompressedIPNode:
         self.accumulate_normal_stats = defaultdict(int)
         self.accumulate_rtt_stats = defaultdict(int)
         self.rtt_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.flows_record = [] # live_span, ports, throughput, valid_throughput
     def aggregate_stats(self):
         '''
         聚合来自所有子节点的stats数据。
@@ -683,6 +687,40 @@ class NetworkTrafficMonitor:
         # 记录活动，更新节点及其所有父节点
         if node:
             node.record_activity_recursive(protocol, action, count, timestamp)
+    def add_flow_record(self, ip_pairs : list, flow_record : dict):
+        '''
+        params:
+            flow_record: 流记录
+        添加流记录。
+        '''
+        '''
+        {
+            'live_span': self.live_span,
+            'throught_output': self.throught_output,
+            'valid_throughput': self.valid_throughput,
+            'max_length': self.max_length
+        }
+        '''
+        
+        forward_ip, backward_ip = ip_pairs[0], ip_pairs[1]
+        reverse_data = {}
+        reverse_data['live_span'] = flow_record['live_span']
+        reverse_data['max_length'] = flow_record['max_length']
+        reverse_data['throught_output'] = [flow_record['throught_output'][1], flow_record['throught_output'][0]]
+        reverse_data['valid_throughput'] = [flow_record['valid_throughput'][1], flow_record['valid_throughput'][0]]
+        trie = self.ipv4_trie if ipaddress.ip_address(forward_ip).version == 4 else self.ipv6_trie
+        node1 = trie.find_node(forward_ip)
+        if not node1:
+            trie.add_ip(forward_ip)
+            node1 = trie.find_node(forward_ip)
+        if node1:
+            node1.flows_record.append(flow_record)
+        node2 = trie.find_node(backward_ip)
+        if not node2:
+            trie.add_ip(backward_ip)
+            node2 = trie.find_node(backward_ip)
+        if node2:
+            node2.flows_record.append(reverse_data)    
     def query_rtt(self, ip, protocol):
         '''
         params:
@@ -801,7 +839,7 @@ class NetworkTrafficMonitor:
         # 合并 IPv4 和 IPv6 Trie 的根节点
         self.merge_smallest_network(other_monitor.ipv4_trie.root, ip_version=4)
         self.merge_smallest_network(other_monitor.ipv6_trie.root, ip_version=6)
-    
+
     @staticmethod
     def load_state(filename : str):
         with open(filename, 'rb') as f:

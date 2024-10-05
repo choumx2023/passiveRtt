@@ -229,6 +229,9 @@ class TcpState():
         self.backward_sack_range = [-1, -1]
         self.time_series = []
         self.max_length = [-1, -1]
+        self.throught_output = [0, 0]
+        self.valid_throughput = [0, 0]
+        self.live_span = [-1, -1]
     def clear(self) -> None:
         self.forward_range = [-1, -1]
         self.backward_range = [-1, -1]
@@ -236,6 +239,12 @@ class TcpState():
         self.backward_sack_range = [-1, -1]
         self.time_series = []
         self.max_length = [-1, -1] # forward, backward
+        self.throught_output = [0, 0] # forward, backward
+        self.valid_throughput = [0, 0] # forward, backward
+        self.live_span = [-1, -1] # start, end
+        # 这里应该加一个更新的操作
+        # live_span, throught output  ip地址，端口号
+        # return live_span, throught_output, valid_throughput
     def update_state(self, value : dict) -> None:
         '''
         value = {
@@ -259,11 +268,14 @@ class TcpState():
         is_valid, packet_type = True, None
         if value['direction'] == 'forward':
             self.max_length[0] = max(self.max_length[0], value['length'])
+            self.throught_output[0] += value['length']
         else:
             self.max_length[1] = max(self.max_length[1], value['length'])
+            self.throught_output[1] += value['length']
         if value['direction'] == 'forward':
             if value['next_seq'] > self.forward_range[1]:
-                self.forward_range[1] = value['next_seq']
+                self.valid_throughput[0] += value['next_seq'] - self.forward_range[1]
+                self.forward_range[0] = value['next_seq']
                 judge += 1
             if value['ack'] > self.backward_range[0]:
                 self.backward_range[0] = value['ack']
@@ -287,6 +299,7 @@ class TcpState():
                 packet_type = 'Normal'
         else:
             if value['next_seq'] > self.backward_range[1]:
+                self.valid_throughput[1] += value['next_seq'] - self.backward_range[1]
                 self.backward_range[1] = value['next_seq']
                 judge += 1
             if value['ack'] > self.forward_range[0]:
@@ -309,6 +322,20 @@ class TcpState():
             else:
                 packet_type = 'Normal'
         return is_valid, packet_type
+    def get_flow_record(self) -> dict:
+        '''
+        This function returns the flow record of the TCP connection
+        params:
+            None
+        return:
+            flow_record: a dictionary containing the flow record of the TCP connection
+        '''
+        return {
+            'live_span': self.live_span,
+            'throught_output': self.throught_output,
+            'valid_throughput': self.valid_throughput,
+            'max_length': self.max_length
+        }
     def __str__(self) -> str:
         return f"TcpState(forward_range={self.forward_range}, backward_range={self.backward_range})"
 
@@ -577,6 +604,21 @@ class CuckooHashTable():
                 return True
         return False  # Key not found
 
+    def flush(self) -> None:
+        '''
+        This function clears the hash table
+        '''
+        is_tcp = self.type == 'TCP'
+        if not is_tcp:
+            return
+        for table_id in range(3):
+            for i in range(self.size):
+                if self.tables[table_id][i] is not None:
+                    
+                    self.values[table_id][i].clear()
+                    self.tcp_state[table_id][i].clear()
+                    
+                
     def print_tables(self) -> None:
         for table_id in range(3):
             print(f"Table {table_id}:")
@@ -591,8 +633,10 @@ class CuckooHashTable():
         print(f"Number of items: {self.num_items}")
         print(f"Load factor: {self.num_items / (2 * self.size)}")
 
+
+    
+    
     def __str__(self) -> str:
         return f"CuckooHashTable(size={self.size}, num_items={self.num_items})"
-    
     
      

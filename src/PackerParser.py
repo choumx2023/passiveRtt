@@ -135,15 +135,12 @@ class NetworkTrafficTable(CuckooHashTable):
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
-                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, protocol, 'None', float(rtt*1000), float(timestamp))
+                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, protocol, 'Response', float(rtt*1000), float(timestamp))
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, direction=value['direction'], types = protocol)
     '''
     def process_icmp_packet(self, packet: Union[ICMP, ICMPv6EchoRequest, ICMPv6EchoReply]):
         """处理ICMP数据包，尝试匹配请求和响应，然后更新RTT表"""
-
-
-
         src_ip, dst_ip = extract_ip(packet)
         icmp_id = packet[ICMP].id
         icmp_seq = packet[ICMP].seq
@@ -315,19 +312,25 @@ class TCPTrafficTable(CuckooHashTable):
         self.rtt_table = rtt_table or RTTTable()  # RTT表实例，用于存储RTT计算结果
         self.tables : list[list[bool, str]]
         self.values : list[list[ListBuffer]]
-        self.tcp_state : list[list[dict]]
+        self.tcp_state : list[list[TcpState]]
         self.net_monitor = monitor
     def delete_entry(self, table_num, index):
         '''
         This function deletes the element from the table.
+        and update the monitor record.
         params:
             table_num (int): The table number.
             index (int): The index of the element to delete.
         '''
+        record = self.tcp_state[table_num][index].get_flow_record()
+        ip_pair = self.tables[table_num][index][0]['ip']
+        self.net_monitor.add_flow_record(ip_pair, record)
         self.values[table_num][index] = ListBuffer(self.buffersize)
         self.tables[table_num][index] = None
+        self.tcp_state : list[ list [TcpState]  ]
         if self.type == 'TCP':
             self.tcp_state[table_num][index].clear()
+        # 此处应该更新monitor的记录
     def add_packet(self, packet : Union[TCP]):
         if TCP in packet:
             tcp_flags = packet[TCP].flags
@@ -402,7 +405,7 @@ class TCPTrafficTable(CuckooHashTable):
         
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         table_num, index = self.lookup(key_temp)
-        if syn_flag and not ack_flag and table_num is not None:
+        if syn_flag and not ack_flag and table_num is not None: # 和之前的记录冲突了
             self.delete_entry(table_num, index)
             table_num = None
         if table_num is None:
@@ -439,6 +442,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
         self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
         self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
+        
     # 处理Timestamp数据包
     def process_timestamp_packet(self, packet : TCP):
         '''
@@ -488,7 +492,8 @@ class TCPTrafficTable(CuckooHashTable):
         if table_num is not None:
             if fin_flag:
                 self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
-            
+                ip_pair = self.tables[table_num][index][0]['ip']
+                self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= self.tcp_state[table_num][index].get_flow_record())
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
@@ -499,7 +504,7 @@ class TCPTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
                 condition2 = lambda x, y: False
-                prior_value , *_= target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
@@ -564,6 +569,7 @@ class TCPTrafficTable(CuckooHashTable):
             self.insert(key_temp)
         table_num, index = self.lookup(key)
         target_values : ListBuffer
+        
         if table_num is not None:
             
             index = self.hash_functions(key, table_num)
@@ -658,13 +664,13 @@ class TCPTrafficTable(CuckooHashTable):
             else:
                 value['direction'] = 'backward'
             is_valid, packet_type = self.tcp_state[table_num][index].update_state(value)
-
+            self.tcp_state : list[list[TcpState]]
             if not is_valid:
                 return
             else:
                 if ack_flag:
                     target_values = self.values[table_num][index]
-                    prior_value, res = target_values.process_normal_tcp_element(new_element=value, is_add=True)
+                    prior_value, res = target_values.process_normal_tcp_element(new_element=value, is_add=True, mtu= self.tcp_state[table_num][index].max_length)
                     if prior_value is not None:
                         request_timestamp = prior_value['timestamp']
                         rtt = timestamp - request_timestamp
