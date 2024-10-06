@@ -103,8 +103,12 @@ def main(pcap_file, output_dir):
             # merge the current monitor into the summary monitor
             time3 = time.time()
             # create a new monitor for the next batch of packets
+            traffic_table.flush_tables()
+            tcp_table.flush_tables()
+            icmp_table.flush_tables()
             save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
             monitor = NetworkTrafficMonitor(name='current', check_anomalies=True, logger=logger)
+            
             traffic_table = NetworkTrafficTable(monitor=monitor)
             tcp_table = TCPTrafficTable(monitor=monitor)
             icmp_table = NetworkTrafficTable(monitor=monitor)
@@ -112,6 +116,7 @@ def main(pcap_file, output_dir):
             time1 = time4
     if count % 100000 != 0:
         part_number += 1
+        tcp_table.flush_table()
         save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
     
     ## 读取各个part的monitor，合并成一个summary monitor
@@ -122,6 +127,7 @@ def main(pcap_file, output_dir):
     final_monitor.name = 'final_summary'
     # 保存summary monitor
     save_data_with_pickle(final_monitor, os.path.join(output_dir, 'final_summary_monitor.pkl'))
+    print('Summary monitor saved.')
     final_monitor.print_trees()
     with open(os.path.join(output_dir, 'icmp_dns_ntp_traffic_table.txt'), 'w') as f:
         sys.stdout = f
@@ -148,7 +154,7 @@ def main(pcap_file, output_dir):
     # save_data_with_pickle(traffic_table.rtt_table, os.path.join(output_dir, 'icmp_dns_ntp_rtt.pkl'))
     # save_data_with_pickle(tcp_table.rtt_table, os.path.join(output_dir, 'tcp_rtt.pkl'))
     # save_data_with_pickle(icmp_table.rtt_table, os.path.join(output_dir, 'icmp_rtt.pkl'))
-    save_data_with_pickle(summary_monitor, os.path.join(output_dir, 'current_monitor.pkl'))
+    save_data_with_pickle(final_monitor, os.path.join(output_dir, 'current_monitor.pkl'))
     
     traffic_table.net_monitor.print_trees()
 if __name__ == "__main__":

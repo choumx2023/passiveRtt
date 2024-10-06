@@ -324,7 +324,8 @@ class TCPTrafficTable(CuckooHashTable):
         '''
         record = self.tcp_state[table_num][index].get_flow_record()
         ip_pair = self.tables[table_num][index][0]['ip']
-        self.net_monitor.add_flow_record(ip_pair, record)
+        if record['max_length'][0] != -1 and record['max_length'][1] != -1:
+            self.net_monitor.add_flow_record(ip_pair, record)
         self.values[table_num][index] = ListBuffer(self.buffersize)
         self.tables[table_num][index] = None
         self.tcp_state : list[ list [TcpState]  ]
@@ -490,16 +491,20 @@ class TCPTrafficTable(CuckooHashTable):
         table_num, index = self.lookup(key)
         target_values : ListBuffer
         if table_num is not None:
+            
             if fin_flag:
                 self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
                 ip_pair = self.tables[table_num][index][0]['ip']
-                self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= self.tcp_state[table_num][index].get_flow_record())
+                record =  self.tcp_state[table_num][index].get_flow_record()
+                if record['fin_count'] > 1 and record['max_length'][0] != -1 and record['max_length'][1] != -1:
+                    self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= record)
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
                 value['direction'] = 'forward'
             else:
                 value['direction'] = 'backward'
+            self.tcp_state[table_num][index].update_state(value)
             if ack_flag:
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
@@ -709,3 +714,8 @@ class TCPTrafficTable(CuckooHashTable):
             weight = 1
         rtt = value['timestamp'] - prior_value['timestamp']
         return float(rtt), weight
+    def flush_table(self):
+        for table_num in range(3):
+            for index in range(self.size):
+                if self.tables[table_num][index] is not None:
+                    self.delete_entry(table_num, index)

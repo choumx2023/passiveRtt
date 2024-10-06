@@ -14,9 +14,8 @@ import seaborn
 import math
 from collections import deque
 from ipaddress import IPv4Address, IPv6Address
-
+import copy
 ## 00成功 01失败
-
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
         self.time_window = time_window  # 数据点有效的时间窗口
@@ -445,7 +444,17 @@ class CompressedIPNode:
         wol = self.rtt_WelfordVariance.str_variance()
         basic_info = f"{prefix}{self.network}, : IP Count={self.contain_ip_number, self.contain_rtt_ip_number}, RTT range: {self.rtt_stats['min_rtt']}ms - {self.rtt_stats['max_rtt']}ms, wolvalue = {wol}"
         return basic_info
-    
+    def __tcpflow__(self, prefix=''):
+        prefix1 = prefix + '  '
+        def format_output(flows):
+            return f'\n{prefix1}  '.join([f'{flow, value}' for flow, value in flows.items()])
+        if self.flows_record == []:
+            return f'{prefix}Flows Data : \n{prefix1}No flows data'
+        flow_info = '\n'.join(
+            f'{prefix1}Flow : {format_output(flow)}'
+            for flow in self.flows_record
+        )
+        return f'{prefix}Flows Data count = {len(self.flows_record)} :\n{flow_info}'
 class CompressedIPTrie:
     '''
     This class represents a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
@@ -611,6 +620,7 @@ class CompressedIPTrie:
         with open(file_path, 'a') as f:
             f.write(f'{node.__basic__(indent_str)}\n')
             f.write(f"{node.__stats__(indent_str)}\n")
+            f.write(f'{node.__tcpflow__(indent_str)}\n')
             f.write(f"{node.__rtt__(indent_str)}\n")
             f.write(f'{node.__anormalies__(indent_str)}\n')
         for child in node.children.values():
@@ -703,12 +713,14 @@ class NetworkTrafficMonitor:
         '''
         
         forward_ip, backward_ip = ip_pairs[0], ip_pairs[1]
-        reverse_data = {}
+        reverse_data = copy.deepcopy(flow_record)
         reverse_data['live_span'] = flow_record['live_span']
         reverse_data['max_length'] = flow_record['max_length']
         reverse_data['throught_output'] = [flow_record['throught_output'][1], flow_record['throught_output'][0]]
         reverse_data['valid_throughput'] = [flow_record['valid_throughput'][1], flow_record['valid_throughput'][0]]
+        reverse_data['total_throughput'] = [flow_record['total_throughput'][1], flow_record['total_throughput'][0]]
         trie = self.ipv4_trie if ipaddress.ip_address(forward_ip).version == 4 else self.ipv6_trie
+        
         node1 = trie.find_node(forward_ip)
         if not node1:
             trie.add_ip(forward_ip)
