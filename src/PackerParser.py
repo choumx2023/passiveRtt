@@ -481,7 +481,7 @@ class TCPTrafficTable(CuckooHashTable):
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         ts_val, ts_ecr = self.extract_tcp_options(packet)
         timestamp = packet.time
-        value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq}
+        value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag)}
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Timestamp', 1, float(timestamp))
         self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Timestamp', 1, float(timestamp))
@@ -492,12 +492,7 @@ class TCPTrafficTable(CuckooHashTable):
         target_values : ListBuffer
         if table_num is not None:
             
-            if fin_flag:
-                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
-                ip_pair = self.tables[table_num][index][0]['ip']
-                record =  self.tcp_state[table_num][index].get_flow_record()
-                if record['fin_count'] > 1 and record['max_length'][0] != -1 and record['max_length'][1] != -1:
-                    self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= record)
+
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
@@ -505,6 +500,12 @@ class TCPTrafficTable(CuckooHashTable):
             else:
                 value['direction'] = 'backward'
             self.tcp_state[table_num][index].update_state(value)
+            if fin_flag:
+                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
+                ip_pair = self.tables[table_num][index][0]['ip']
+                record =  self.tcp_state[table_num][index].get_flow_record()
+                if record['fin_sign'] == 3 and record['max_length'][0] != -1 and record['max_length'][1] != -1:
+                    self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= record)
             if ack_flag:
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
@@ -645,7 +646,7 @@ class TCPTrafficTable(CuckooHashTable):
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         timestamp = packet.time
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
-                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq}
+                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag)}
         if additional_info == 'PSH':
             PSH_flag = 1
             value['PSH'] = PSH_flag
@@ -715,6 +716,9 @@ class TCPTrafficTable(CuckooHashTable):
         rtt = value['timestamp'] - prior_value['timestamp']
         return float(rtt), weight
     def flush_table(self):
+        '''
+        This function is used to flush the table. clear all the entries.
+        '''
         for table_num in range(3):
             for index in range(self.size):
                 if self.tables[table_num][index] is not None:

@@ -447,12 +447,12 @@ class CompressedIPNode:
     def __tcpflow__(self, prefix=''):
         prefix1 = prefix + '  '
         def format_output(flows):
-            return f'\n{prefix1}  '.join([f'{flow, value}' for flow, value in flows.items()])
+            return f'\n{prefix1}  '.join([f'{flow} : {value}' for flow, value in flows.items()])
         if self.flows_record == []:
             return f'{prefix}Flows Data : \n{prefix1}No flows data'
         flow_info = '\n'.join(
-            f'{prefix1}Flow : {format_output(flow)}'
-            for flow in self.flows_record
+        f'{prefix1}Flow {count + 1}: \n{prefix1}  {format_output(flow)}'
+        for count, flow in enumerate(self.flows_record)
         )
         return f'{prefix}Flows Data count = {len(self.flows_record)} :\n{flow_info}'
 class CompressedIPTrie:

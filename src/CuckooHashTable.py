@@ -234,7 +234,7 @@ class TcpState():
         self.init_seq = [-1, -1]
         self.end_seq = [-1, -1]
         self.live_span = [-1, -1]
-        self.fin_count = 0
+        self.fin_sign = 0
     def clear(self) -> None:
         self.forward_range = [-1, -1]
         self.backward_range = [-1, -1]
@@ -247,7 +247,7 @@ class TcpState():
         self.live_span = [-1, -1] # start, end
         self.init_seq = [-1, -1]
         self.end_seq = [-1, -1]
-        self.fin_count = 0
+        self.fin_sign = 0
         # 这里应该加一个更新的操作
         # live_span, throught output  ip地址，端口号
         # return live_span, throught_output, valid_throughput
@@ -271,17 +271,20 @@ class TcpState():
             type: a string indicating the type of the packet
         '''
         judge = 0
-        if 'FIN' in value and value['FIN']:
-            self.fin_count += 1
+
         is_valid, packet_type = True, None
         # 更新live_span, throught_output, max_length
         if value['direction'] == 'forward':
+            if 'FIN' in value and value['FIN']:
+                self.fin_sign |=1
             self.max_length[0] = max(self.max_length[0], value['length'])
             self.throught_output[0] += value['length']
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
         else:
+            if 'FIN' in value and value['FIN']:
+                self.fin_sign |= 2
             self.max_length[1] = max(self.max_length[1], value['length'])
             self.throught_output[1] += value['length']
             if self.live_span[0] == -1:
@@ -361,11 +364,12 @@ class TcpState():
             flow_record: a dictionary containing the flow record of the TCP connection
         '''
         return {
-            'live_span': self.live_span,
+            'live_span': [float(self.live_span[0]) , float(self.live_span[1])],
+            'live_time': float(self.live_span[1]) - float(self.live_span[0]),
             'throught_output': self.throught_output,
             'valid_throughput': self.valid_throughput,
             'max_length': self.max_length,
-            'fin_count': self.fin_count,
+            'fin_sign': self.fin_sign,
             'total_throughput': [self.end_seq[0] - self.init_seq[0], self.end_seq[1] - self.init_seq[1]],
             'live_time': self.live_span[1] - self.live_span[0],
             'all_output' : self.valid_throughput[0] + self.valid_throughput[1]
