@@ -15,6 +15,7 @@ import math
 from collections import deque
 from ipaddress import IPv4Address, IPv6Address
 import copy
+import matplotlib.pyplot as plt
 ## 00成功 01失败
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
@@ -659,6 +660,32 @@ class CompressedIPTrie:
                     node.accumulate_normal_stats[(protocol, action)] += details['count']
                 for (protocol, pattern), rtts in child.anomalous_rtts_records.items():
                     node.accumulate_rtt_stats[('Anomalous '+protocol, pattern)] += len(rtts)
+                    
+
+    def analyse(self, node):
+        packet_length_records = defaultdict(int)  # 用于存储前两位小数的统计结果
+
+        # 封装网络条件的检查逻辑
+        def is_valid_network(node):
+            return (node.network.prefixlen == 32 and node.network.version == 4) or \
+                (node.network.prefixlen == 128 and node.network.version == 6)
+
+        def helper(node):
+            # 只有在满足网络条件时才继续处理
+            if is_valid_network(node):
+                for flow in node.flows_record:
+                    avg_packet_length = flow.get('average_packet_length', None)
+                    avg_packet_length = avg_packet_length[0]
+                    print(avg_packet_length)
+                    rounded_avg = round(avg_packet_length * 0.2, 0) / 0.2  # 保留前两位小数
+                    packet_length_records[rounded_avg] += 1  # 计数
+
+                # 递归处理子节点
+            for child in node.children.values():
+                helper(child)
+
+        helper(node)  # 启动递归遍历
+        return packet_length_records
 class NetworkTrafficMonitor:
     def __init__(self, name = '', check_anomalies = 'True', logger = None):
         '''
@@ -715,10 +742,12 @@ class NetworkTrafficMonitor:
         forward_ip, backward_ip = ip_pairs[0], ip_pairs[1]
         reverse_data = copy.deepcopy(flow_record)
         reverse_data['live_span'] = flow_record['live_span']
-        reverse_data['max_length'] = flow_record['max_length']
+        reverse_data['max_length'] = [flow_record['max_length'][1], flow_record['max_length'][0]]
         reverse_data['throught_output'] = [flow_record['throught_output'][1], flow_record['throught_output'][0]]
         reverse_data['valid_throughput'] = [flow_record['valid_throughput'][1], flow_record['valid_throughput'][0]]
         reverse_data['total_throughput'] = [flow_record['total_throughput'][1], flow_record['total_throughput'][0]]
+        reverse_data['packet_count'] = [flow_record['packet_count'][1], flow_record['packet_count'][0]]
+        reverse_data['average_packet_length'] = [flow_record['average_packet_length'][1], flow_record['average_packet_length'][0]]
         trie = self.ipv4_trie if ipaddress.ip_address(forward_ip).version == 4 else self.ipv6_trie
         
         node1 = trie.find_node(forward_ip)
@@ -805,6 +834,30 @@ class NetworkTrafficMonitor:
         #print("IPv4 Trie is saved to tree.txt")
         self.ipv6_trie.print_tree(file_path=f'{self.suffix}_tree.txt')
         #print("IPv6 Trie is saved to tree.txt")
+        
+    def analyze_traffic(self):
+        v4_dict = self.ipv4_trie.analyse(self.ipv4_trie.root)
+        v6_dict = self.ipv6_trie.analyse(self.ipv6_trie.root)
+        def sort_and_plot(data: defaultdict):
+            # 1. 对字典按键（average_packet_length）进行排序
+            sorted_data = dict(sorted(data.items()))  # items() 返回字典的键值对
+
+            # 2. 分别获取排序后的键和值
+            x = list(sorted_data.keys())  # 排序后的 average_packet_length
+            y = list(sorted_data.values())  # 对应的 count
+
+            # 3. 绘制图表
+            plt.figure(figsize=(10, 6))
+            plt.bar(x, y, color='blue')  # 使用条形图展示
+            plt.title("Packet Length Frequency")
+            plt.xlabel("Average Packet Length (rounded to 2 decimal places)")
+            plt.ylabel("Count")
+            plt.show()
+
+        # 调用对 IPv4 和 IPv6 数据进行排序并绘制图表
+        sort_and_plot(v4_dict)
+        sort_and_plot(v6_dict)
+            
     def save_state(self, filename):
         with open(filename, 'wb') as f:
             pickle.dump(self, f)

@@ -235,6 +235,7 @@ class TcpState():
         self.end_seq = [-1, -1]
         self.live_span = [-1, -1]
         self.fin_sign = 0
+        self.packet_count = [0, 0]
     def clear(self) -> None:
         self.forward_range = [-1, -1]
         self.backward_range = [-1, -1]
@@ -248,6 +249,7 @@ class TcpState():
         self.init_seq = [-1, -1]
         self.end_seq = [-1, -1]
         self.fin_sign = 0
+        self.packet_count = [0, 0]
         # 这里应该加一个更新的操作
         # live_span, throught output  ip地址，端口号
         # return live_span, throught_output, valid_throughput
@@ -292,6 +294,7 @@ class TcpState():
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
         # 更新forward_range, backward_range, valid_throughput
         if value['direction'] == 'forward':
+            self.packet_count[0] += 1
             if self.init_seq[0] == -1:
                 self.init_seq[0] = value['seq']
             if self.end_seq[0] <= value['next_seq']:
@@ -324,6 +327,7 @@ class TcpState():
             else:
                 packet_type = 'Normal'
         else:
+            self.packet_count[1] += 1
             if self.init_seq[1] == -1:
                 self.init_seq[1] = value['seq']
             if self.end_seq[1] <= value['next_seq']:
@@ -372,7 +376,9 @@ class TcpState():
             'fin_sign': self.fin_sign,
             'total_throughput': [self.end_seq[0] - self.init_seq[0], self.end_seq[1] - self.init_seq[1]],
             'live_time': self.live_span[1] - self.live_span[0],
-            'all_output' : self.valid_throughput[0] + self.valid_throughput[1]
+            'all_output' : self.valid_throughput[0] + self.valid_throughput[1],
+            'packet_count': self.packet_count,
+            'average_packet_length': [1.0 * self.throught_output[0] / (1e-3 + self.packet_count[0]), 1.0 * self.throught_output[1] /(1e-3 +  self.packet_count[1])]
         }
     def __str__(self) -> str:
         return f"TcpState(forward_range={self.forward_range}, backward_range={self.backward_range})"
@@ -642,7 +648,7 @@ class CuckooHashTable():
                 return True
         return False  # Key not found
 
-    def flush(self) -> None:
+    def flush_tables(self) -> None:
         '''
         This function clears the hash table
         '''

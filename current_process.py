@@ -91,15 +91,15 @@ def main(pcap_file, output_dir):
         elif TCP in packet:
             tcp_table.add_packet(packet)
 
+        # every 10000 packets, print the number of packets processed and the time spent
         if count % 10000 == 0:
+            
             time2 = time.time()
             print(f'Processed {count} packets, time: {time2 - time1}s')
             time1 = time2
+        # every 100000 packets, save the current monitor and create a new one
         if count % 100000 == 0:
             part_number += 1
-            # traffic_table.print_tables()
-            # tcp_table.print_tables()
-            # icmp_table.print_tables()
             # merge the current monitor into the summary monitor
             time3 = time.time()
             # create a new monitor for the next batch of packets
@@ -114,8 +114,11 @@ def main(pcap_file, output_dir):
             icmp_table = NetworkTrafficTable(monitor=monitor)
             time4 = time.time()
             time1 = time4
+    # save the last part of the monitor
     if count % 100000 != 0:
         part_number += 1
+        traffic_table.flush_tables()
+        icmp_table.flush_tables()
         tcp_table.flush_table()
         save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
     
@@ -128,7 +131,9 @@ def main(pcap_file, output_dir):
     # 保存summary monitor
     save_data_with_pickle(final_monitor, os.path.join(output_dir, 'final_summary_monitor.pkl'))
     print('Summary monitor saved.')
+    final_monitor : NetworkTrafficMonitor
     final_monitor.print_trees()
+    final_monitor.analyze_traffic()
     with open(os.path.join(output_dir, 'icmp_dns_ntp_traffic_table.txt'), 'w') as f:
         sys.stdout = f
         traffic_table.print_tables()
@@ -156,7 +161,8 @@ def main(pcap_file, output_dir):
     # save_data_with_pickle(icmp_table.rtt_table, os.path.join(output_dir, 'icmp_rtt.pkl'))
     save_data_with_pickle(final_monitor, os.path.join(output_dir, 'current_monitor.pkl'))
     
-    traffic_table.net_monitor.print_trees()
+    #traffic_table.net_monitor.print_trees()
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process a pcap file and generate traffic and RTT tables.')
     parser.add_argument('pcap_file', type=str, help='Path to the input pcap file')

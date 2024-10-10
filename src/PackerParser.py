@@ -7,6 +7,7 @@ from utils.utils import extract_ip
 import time
 from .Monitor import NetworkTrafficMonitor
 import ipaddress
+import json
 # CuckooHashTable key要求是字典
 def ip_compare(src_ip, dst_ip):
     ip1 = ipaddress.ip_address(src_ip)
@@ -138,6 +139,7 @@ class NetworkTrafficTable(CuckooHashTable):
                     self.net_monitor.add_or_update_ip_with_rtt(src_ip, protocol, 'Response', float(rtt*1000), float(timestamp))
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, direction=value['direction'], types = protocol)
+    
     '''
     def process_icmp_packet(self, packet: Union[ICMP, ICMPv6EchoRequest, ICMPv6EchoReply]):
         """处理ICMP数据包，尝试匹配请求和响应，然后更新RTT表"""
