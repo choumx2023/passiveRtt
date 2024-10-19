@@ -132,6 +132,8 @@ class NetworkTrafficTable(CuckooHashTable):
                 condition1 = lambda x, y: x['type'] in [8, 128] and x['seq'] == y['seq'] and x['id'] == y['id']
                 condition2 = lambda x, y: False
                 prior_value = target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
+                if 174302536.457  >= float(value['timestamp']) >= 174302536.457 :
+                    print(value)
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp

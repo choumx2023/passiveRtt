@@ -17,7 +17,7 @@ def read_pickle(filename):
     with open(filename, 'rb') as file:
         return pickle.load(file)
 class MonitorEval:
-    def __init__(self, current_monitor : NetworkTrafficMonitor, tcptrace_monitor : NetworkTrafficMonitor, baseline_monitor : NetworkTrafficMonitor):
+    def __init__(self, current_monitor : NetworkTrafficMonitor, tcptrace_monitor : NetworkTrafficMonitor, baseline_monitor : NetworkTrafficMonitor = None):
         self.current_monitor = current_monitor
         self.tcptrace_monitor = tcptrace_monitor
         self.baseline_monitor = baseline_monitor

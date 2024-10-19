@@ -16,6 +16,7 @@ from collections import deque
 from ipaddress import IPv4Address, IPv6Address
 import copy
 import matplotlib.pyplot as plt
+from statistics import mean, stdev
 ## 00成功 01失败
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
@@ -58,7 +59,9 @@ class WelfordVariance:
         if self.count < 2:
             return float('nan')  # 数据点不足以计算方差
         return self.M2 / (self.count - 1)
-
+    def mean(self):
+        """返回当前的均值。"""
+        return self.mean
     def remove_outdated(self, current_time: float):
         """移除过时的数据点，根据时间窗口判断。"""
         while self.data and (current_time - self.data[0][1]) > self.time_window:
@@ -150,6 +153,7 @@ class CompressedIPNode:
         self.rtt_records = defaultdict(list) # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.all_rtt_records = [] # 所有正常的rtt记录，不区分协议和模式
         self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
+        self.subnets_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.rtt_stats = {
             'min_rtt': float('inf'),
             'max_rtt': float('-inf'), 
@@ -215,7 +219,12 @@ class CompressedIPNode:
         记录RTT值。
         '''
         key = (protocol, pattern)
+        value = (rtt, timestamp)
         if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
+            #normal_rtt = self.rtt_WelfordVariance.mean()
+            #if self.check_anomal_in_subnets(value, normal_rtt):
+            #    self.subnets_anomalous_rtts_records[key].append((rtt, timestamp))
+            #else:
             self.anomalous_rtts_records[key].append((rtt, timestamp))
             if self.logger:
                 self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
@@ -372,6 +381,44 @@ class CompressedIPNode:
             'max_rtt': max_rtt,
             'all_rtts': all_rtts
         }
+    def check_anomal_in_subnets(self, rtt: float, timestamp: float, protocol: str, pattern: str) -> bool:
+        '''
+        检查RTT记录是否异常，并确定异常是单个IP的问题还是子网级别的问题。
+
+        params:
+            rtt: 待检查的RTT值。
+            timestamp: RTT记录的时间戳。
+            protocol: 使用的协议。
+            pattern: 使用的模式。
+
+        returns:
+            bool: 如果确认是子网级别的异常，则返回True；如果只是当前IP的异常，则返回False。
+        '''
+        key = (protocol, pattern)
+        normal_rtts = [record[0] for record in self.rtt_records[key]]  # 获取当前子网中所有正常的RTT记录
+        avg_normal_rtt = mean(normal_rtts) if normal_rtts else 0
+
+        # 检查当前IP的RTT是否异常
+        if rtt <= avg_normal_rtt:
+            return False  # 当前RTT不异常，或无法判断为异常
+
+        # 获取同一子网下所有IP的异常RTT记录
+        anomalous_rtts = [record[0] for record in self.anomalous_rtts_records[key]]
+        subnets_anomalous_rtts = [record[0] for record in self.subnets_anomalous_rtts_records[key]]
+
+        # 同一时间窗内其他IP的异常RTT
+        relevant_anomalous_rtts = [r for r, t in zip(anomalous_rtts, subnets_anomalous_rtts) if abs(t - timestamp) < 60]  # 60秒内为相同时间
+
+        # 检查子网级别的异常
+        if not relevant_anomalous_rtts:
+            return False  # 没有其他相关异常，可能是单个IP的问题
+
+        # 计算异常RTT的平均值
+        avg_anomalous_rtt = mean(relevant_anomalous_rtts)
+        if avg_anomalous_rtt > avg_normal_rtt:
+            return True  # 子网级别异常
+        else:
+            return False  # 单个IP的异常
     def print_node(self):
         print('my network:', self.network, 'my stats:', self.stats)
 
@@ -676,8 +723,10 @@ class CompressedIPTrie:
                 for flow in node.flows_record:
                     avg_packet_length = flow.get('average_packet_length', None)
                     avg_packet_length = avg_packet_length[0]
-                    print(avg_packet_length)
-                    rounded_avg = round(avg_packet_length * 0.2, 0) / 0.2  # 保留前两位小数
+                    if avg_packet_length <0:
+                        print(node.flows_record)
+                        exit(1)
+                    rounded_avg = round(avg_packet_length , 1)   # 保留前两位小数
                     packet_length_records[rounded_avg] += 1  # 计数
 
                 # 递归处理子节点
@@ -838,6 +887,7 @@ class NetworkTrafficMonitor:
     def analyze_traffic(self):
         v4_dict = self.ipv4_trie.analyse(self.ipv4_trie.root)
         v6_dict = self.ipv6_trie.analyse(self.ipv6_trie.root)
+
         def sort_and_plot(data: defaultdict):
             # 1. 对字典按键（average_packet_length）进行排序
             sorted_data = dict(sorted(data.items()))  # items() 返回字典的键值对
@@ -846,12 +896,39 @@ class NetworkTrafficMonitor:
             x = list(sorted_data.keys())  # 排序后的 average_packet_length
             y = list(sorted_data.values())  # 对应的 count
 
-            # 3. 绘制图表
+            # 3. 绘制条形图（原有功能）
             plt.figure(figsize=(10, 6))
             plt.bar(x, y, color='blue')  # 使用条形图展示
             plt.title("Packet Length Frequency")
             plt.xlabel("Average Packet Length (rounded to 2 decimal places)")
             plt.ylabel("Count")
+            plt.show()
+
+            # 4. 计算 PDF
+            total_count = sum(y)
+            pdf = [count / total_count for count in y]
+
+            # 5. 绘制 PDF 图
+            plt.figure(figsize=(10, 6))
+            plt.plot(x, pdf, color='green', marker='o')  # 绘制 PDF 曲线图
+            plt.title("Probability Density Function (PDF)")
+            plt.xlabel("Average Packet Length (rounded to 2 decimal places)")
+            plt.ylabel("Probability")
+            plt.grid(True)
+            plt.show()
+
+            # 6. 计算 CDF
+            cdf = [sum(pdf[:i + 1]) for i in range(len(pdf))]
+
+            # 7. 绘制 CDF 图
+            plt.figure(figsize=(10, 6))
+            plt.plot(x, cdf, color='r', marker='.')  # 绘制 CDF 曲线图
+            plt.ylim(-0.1, 1.1)
+            plt.xlim(0, 1600)
+            plt.title("Cumulative Distribution Function (CDF)")
+            plt.xlabel("Average Packet Length (rounded to 2 decimal places)")
+            plt.ylabel("Cumulative Probability")
+            plt.grid(True)
             plt.show()
 
         # 调用对 IPv4 和 IPv6 数据进行排序并绘制图表

@@ -280,7 +280,7 @@ class TcpState():
             if 'FIN' in value and value['FIN']:
                 self.fin_sign |=1
             self.max_length[0] = max(self.max_length[0], value['length'])
-            self.throught_output[0] += value['length']
+            self.throught_output[0] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
@@ -288,7 +288,7 @@ class TcpState():
             if 'FIN' in value and value['FIN']:
                 self.fin_sign |= 2
             self.max_length[1] = max(self.max_length[1], value['length'])
-            self.throught_output[1] += value['length']
+            self.throught_output[1] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
@@ -396,7 +396,7 @@ class CuckooHashTable():
             for NTP : 'code'
             for DNS : 'query', 'response', 'id'
     '''
-    def __init__(self, initial_size = 100013, buffersize = 30, type = 'Normal') -> None:
+    def __init__(self, initial_size = 100013, buffersize = 300, type = 'Normal') -> None:
         '''
         Initialize the CuckooHashTable with the given initial size and buffer size
         parameter:
