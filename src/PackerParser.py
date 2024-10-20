@@ -101,11 +101,16 @@ class NetworkTrafficTable(CuckooHashTable):
                 self.net_monitor.add_ip_and_record_activity(dst_ip, protocol, 'Request' if icmp_type == 128 else 'Response', 1, float(timestamp))
             print("find ICMPv6!")
         else:
+            print("Not ICMP or ICMPv6", value)
             return  # 不是我们感兴趣的包
+        if float(timestamp) > 1714302536.457 and float(timestamp) < 1714302536.460:
+            print("find ICMP! and pass return ,between 1714302536.457 and 1714302536.460",float(timestamp))
         key = {'ip': (src_ip, dst_ip), 'protocol': protocol}
         value = {'timestamp': timestamp, 'type': icmp_type, 'seq': icmp_seq, 'id': icmp_id}
 
         if icmp_type not in [0, 8, 128, 129]:
+            print("icmp_type not in [0, 8, 128, 129]", icmp_type)
+            print(value)
             return  # 只处理请求和响应报文
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': protocol}
         table_num, index = self.lookup(key_temp)
@@ -125,16 +130,24 @@ class NetworkTrafficTable(CuckooHashTable):
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
+                if float(timestamp) > 1714302536.457 and float(timestamp) < 1714302536.460:
+                    print("find ICMP 1 ! between 1714302536.457 and 1714302536.460",float(timestamp))
+                    print(target_values)
+                    print(value)
                 target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
+                if float(timestamp) > 1714302536.457 and float(timestamp) < 1714302536.460:
+                    print("find ICMP 1 !", target_values)
             elif icmp_type in [0, 129]:  # ICMP或ICMPv6响应
                 # 尝试找到匹配的请求
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: x['type'] in [8, 128] and x['seq'] == y['seq'] and x['id'] == y['id']
                 condition2 = lambda x, y: False
-                prior_value = target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
-                if 174302536.457  >= float(value['timestamp']) >= 174302536.457 :
-                    print(value)
+                prior_value = target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=False)
+                if float(timestamp) > 1714302536.457 and float(timestamp) < 1714302536.460:
+                    print(target_values)
+                    print("find ICMP 2 ! between 1714302536.457 and 1714302536.460",float(timestamp), prior_value)
                 if prior_value is not None:
+                    print('not found', value)
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表

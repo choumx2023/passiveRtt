@@ -34,12 +34,14 @@ class ListBuffer:
             为什么要设置len不等于1的条件
         '''
         if len(item) == 1:
+            print('add retuen')
             return
+        print('add')
         self.buffer.append(item)
         self.count += 1
         if self.count > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
-
+            self.count -= 1
     def process_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
         '''
         非TCP的处理函数
@@ -67,6 +69,7 @@ class ListBuffer:
                 if first_matched_value is None:
                     first_matched_value =  copy.deepcopy(current_element)
                 self.buffer.pop(i)  # 移除满足条件1的元素
+                self.count -= 1
             i -= 1
 
         if is_add:
@@ -107,6 +110,7 @@ class ListBuffer:
                 if first_matched_value is None:
                     first_matched_value =  copy.deepcopy(current_element)
                 self.buffer.pop(i)  # 移除满足条件1的元素
+                self.count -= 1
             i -= 1
 
         if is_add:
@@ -145,6 +149,7 @@ class ListBuffer:
             if new_element['direction'] != current_element['direction']: # 不同方向
                 if current_element['ack'] < new_element['seq']:# 过早的数据包
                     self.buffer.pop(i)# 过期的不留
+                    self.count -= 1
                 elif current_element['ack'] == new_element['seq'] and current_element['seq'] <= new_element['ack'] :
                     if 'PSH' in current_element and current_element['PSH'] == 1:
                         PSH_flag = True
@@ -160,9 +165,11 @@ class ListBuffer:
                             maxium_length = current_element['length']
                             count += 1
                             self.buffer.pop(i)
+                            self.count -= 1
                         # 如果连续发送不少于三个，删掉前n-2个
                         else :
                             self.buffer.pop(i)
+                            self.count -= 1
             if new_element['direction'] == current_element['direction']:#相同方向
                 if current_element['ack'] == new_ack:
                     count = 0
@@ -450,7 +457,9 @@ class CuckooHashTable():
             port_hashes = [(port << 16) for port in key_dict['port']]
             # 类似地处理端口号，保证顺序不影响哈希值
             result += sum(port_hashes) + (port_hashes[0] % self.size) * (port_hashes[1] % self.size)
-
+        else :
+            result *= 19
+            result += 13
         if function_id == 0:
             return result % self.size
         elif function_id == 1:
