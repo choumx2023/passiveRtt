@@ -90,7 +90,6 @@ def main(pcap_file, output_dir):
             traffic_table.add_packet(packet)
         elif TCP in packet:
             tcp_table.add_packet(packet)
-            if packet
 
         # every 10000 packets, print the number of packets processed and the time spent
         if count % 10000 == 0:
