@@ -34,9 +34,7 @@ class ListBuffer:
             为什么要设置len不等于1的条件
         '''
         if len(item) == 1:
-            print('add retuen')
             return
-        print('add')
         self.buffer.append(item)
         self.count += 1
         if self.count > self.size:
@@ -153,15 +151,20 @@ class ListBuffer:
                 elif current_element['ack'] == new_element['seq'] and current_element['seq'] <= new_element['ack'] :
                     if 'PSH' in current_element and current_element['PSH'] == 1:
                         PSH_flag = True
+                    # 如果是第一个匹配的包
                     if first_match_value is None:
                         if current_element['next_seq'] == new_element['ack']:
                             GAP_flag = False
                         first_match_value = copy.deepcopy(current_element)
-                        maxium_length = first_match_value['length']
+                        # 如果第一个匹配的包是合并了多个包的包，直接定义为背靠背
+                        if current_element['length'] >= mtu[new_element['direction'] == 'forward'] * 2 and current_element['length'] > 1400 * 2:
+                            return first_match_value, "Back-to-Back"
                         count += 1
                     else:# 验证是不是有两个及以上的包
                         # 如果不止发送了一个packet，要保留两个
-                        if abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= mtu[new_element['direction'] == 'forward'] and current_element['length'] > 1000:
+                        if (
+                            abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= mtu[new_element['direction'] == 'forward'] and current_element['length'] > 1000
+                        ):    
                             maxium_length = current_element['length']
                             count += 1
                             self.buffer.pop(i)
@@ -286,7 +289,7 @@ class TcpState():
         if value['direction'] == 'forward':
             if 'FIN' in value and value['FIN']:
                 self.fin_sign |=1
-            self.max_length[0] = max(self.max_length[0], value['length'])
+            self.max_length[0] = max(self.max_length[0], min(value['length'], 1448))
             self.throught_output[0] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
@@ -294,7 +297,7 @@ class TcpState():
         else:
             if 'FIN' in value and value['FIN']:
                 self.fin_sign |= 2
-            self.max_length[1] = max(self.max_length[1], value['length'])
+            self.max_length[1] = max(self.max_length[1], min(value['length'],1448))
             self.throught_output[1] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']

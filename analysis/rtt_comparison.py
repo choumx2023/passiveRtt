@@ -270,9 +270,6 @@ class RTTAnalysis:
             tcptrace:  
             current :     
             baseline: 
-            
-            
-            
         ]
         '''
         return result

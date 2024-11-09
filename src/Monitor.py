@@ -16,6 +16,7 @@ from collections import deque
 from ipaddress import IPv4Address, IPv6Address
 import copy
 import matplotlib.pyplot as plt
+import numpy as np
 from statistics import mean, stdev
 ## 00成功 01失败
 class WelfordVariance:
@@ -59,7 +60,7 @@ class WelfordVariance:
         if self.count < 2:
             return float('nan')  # 数据点不足以计算方差
         return self.M2 / (self.count - 1)
-    def mean(self):
+    def get_mean(self):
         """返回当前的均值。"""
         return self.mean
     def remove_outdated(self, current_time: float):
@@ -221,11 +222,13 @@ class CompressedIPNode:
         key = (protocol, pattern)
         value = (rtt, timestamp)
         if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
-            #normal_rtt = self.rtt_WelfordVariance.mean()
-            #if self.check_anomal_in_subnets(value, normal_rtt):
-            #    self.subnets_anomalous_rtts_records[key].append((rtt, timestamp))
-            #else:
-            self.anomalous_rtts_records[key].append((rtt, timestamp))
+            current_mean_rtt = self.rtt_WelfordVariance.get_mean()
+            delta = rtt - current_mean_rtt
+            anormal_value = (rtt, timestamp, current_mean_rtt, delta)
+            if self.check_anomal_in_subnets(key, anormal_value):
+                self.subnets_anomalous_rtts_records[key].append(anormal_value)
+            else:
+                self.anomalous_rtts_records[key].append(anormal_value)
             if self.logger:
                 self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
         else: # 如果RTT正常，则记录到正常的rtt记录中
@@ -381,46 +384,79 @@ class CompressedIPNode:
             'max_rtt': max_rtt,
             'all_rtts': all_rtts
         }
-    def check_anomal_in_subnets(self, rtt: float, timestamp: float, protocol: str, pattern: str) -> bool:
+    
+    def get_32bit_ips_rtts(self):
+        """
+        获取当前节点下所有 32 位子节点的 IP 地址的 RTT 记录。
+        """
+        rtts = []
+        
+        # 遍历当前节点的子节点，收集 32 位 IP 地址的 RTT 记录
+        for child in self.children.values():
+            if child.network.prefixlen == 32:
+                # 提取 32 位子节点的 RTT 记录
+                rtts.extend(child.anomalous_rtts_records.values())
+            else:
+                # 递归调用，处理更深层级的子节点
+                rtts.extend(child.get_32bit_ips_rtts())
+        
+        return rtts
+
+    def check_anomal_in_subnets(self, key, anormal_value) -> bool:
         '''
-        检查RTT记录是否异常，并确定异常是单个IP的问题还是子网级别的问题。
-
-        params:
-            rtt: 待检查的RTT值。
-            timestamp: RTT记录的时间戳。
-            protocol: 使用的协议。
-            pattern: 使用的模式。
-
-        returns:
-            bool: 如果确认是子网级别的异常，则返回True；如果只是当前IP的异常，则返回False。
+        key : (protocol, pattern)
+        anormal_value: (rtt, timestamp, current_mean_rtt, delta)
+        检查子网中的异常。
+        
+        Parameters:
+            key: 键，指定协议和模式
+            anormal_value: 异常值，包含 (rtt, timestamp, current_mean_rtt, delta)
+            
+        Returns:
+            bool: 是否为子网级别的异常
         '''
-        key = (protocol, pattern)
-        normal_rtts = [record[0] for record in self.rtt_records[key]]  # 获取当前子网中所有正常的RTT记录
-        avg_normal_rtt = mean(normal_rtts) if normal_rtts else 0
+        timestamp = anormal_value[1]
+        parent = self.parent
+        if parent.network.prefixlen < 24:
+            return False
+        if parent.parent is not None and parent.parent.network.prefixlen >=24:
+            parent = parent.parent
+         
+        # 获取同一子网下所有IP的异常RTT记录，限定在时间窗内
+        anomalous_rtts = [
+            record for record in self.anomalous_rtts_records.get(key, [])
+            if record[1] + 10 > timestamp
+        ]
+        subnets_anomalous_rtts = [
+            record for record in self.subnets_anomalous_rtts_records.get(key, [])
+            if record[1] + 10 > timestamp
+        ]
 
-        # 检查当前IP的RTT是否异常
-        if rtt <= avg_normal_rtt:
-            return False  # 当前RTT不异常，或无法判断为异常
+        # 合并同一时间窗内的异常RTT
+        relevent_anomalous_rtts = anomalous_rtts + subnets_anomalous_rtts
+        delta = anormal_value[3]
+        
+        # 检查是否存在相关的异常RTT
+        def check_relevant_anomalous_rtts(rtts, delta):
+            accumulated_delta = [rtt[3] for rtt in rtts]
+            
+            # 计算均值和标准差，并使用切比雪夫不等式检查
+            if len(accumulated_delta) < 2:
+                return False
+            mean = np.mean(accumulated_delta)
+            sigma = np.std(accumulated_delta)
+            k = np.sqrt(1 / 0.1)  # 设置90%的概率阈值
+            
+            lower_bound = mean - k * sigma
+            upper_bound = mean + k * sigma
+            
+            # 如果delta在均值的k倍sigma范围内，则可能存在相关趋势
+            return lower_bound <= delta <= upper_bound
 
-        # 获取同一子网下所有IP的异常RTT记录
-        anomalous_rtts = [record[0] for record in self.anomalous_rtts_records[key]]
-        subnets_anomalous_rtts = [record[0] for record in self.subnets_anomalous_rtts_records[key]]
-
-        # 同一时间窗内其他IP的异常RTT
-        relevant_anomalous_rtts = [r for r, t in zip(anomalous_rtts, subnets_anomalous_rtts) if abs(t - timestamp) < 60]  # 60秒内为相同时间
-
-        # 检查子网级别的异常
-        if not relevant_anomalous_rtts:
+        # 如果没有相关异常RTT，则认为是单个IP的问题，否则是子网级别的异常
+        if not check_relevant_anomalous_rtts(relevent_anomalous_rtts, delta):
             return False  # 没有其他相关异常，可能是单个IP的问题
-
-        # 计算异常RTT的平均值
-        avg_anomalous_rtt = mean(relevant_anomalous_rtts)
-        if avg_anomalous_rtt > avg_normal_rtt:
-            return True  # 子网级别异常
-        else:
-            return False  # 单个IP的异常
-    def print_node(self):
-        print('my network:', self.network, 'my stats:', self.stats)
+        return True
 
     def __rtt__(self, prefix=''):
         prefix1 = prefix + '  '
@@ -451,15 +487,19 @@ class CompressedIPNode:
         返回异常数据。
         '''
         prefix1 = prefix + '  '
-        if self.anomalous_rtts_records == {}:
+        if self.anomalous_rtts_records == {} and self.subnets_anomalous_rtts_records == {}:
             return f'{prefix}Anomalies Data: \n{prefix1}No anomalies data'
         def format_output(rtts):
-            #return f'\n{prefix1}  '.join([f'{rtt}ms, {timestamps}' for rtt, timestamps in rtts])
             return f'\n{prefix1}  '.join([', '.join(map(str, rtts[i:i+8])) for i in range(0, len(rtts), 8)])
+        
+        subnet_anomalous_rtts = '\n'.join(
+            f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
+            for (protocol, pattern), rtts in self.subnets_anomalous_rtts_records.items())
+        
         rtt_info = '\n'.join(
             f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
             for (protocol, pattern), rtts in self.anomalous_rtts_records.items())
-        return f'{prefix}Anomalies Data: \n{rtt_info}'
+        return f'{prefix}Anomalies Data: \n{prefix}  Subnets Anomalies Data: \n{subnet_anomalous_rtts}\n{prefix}  Anomalies IP Data: \n{rtt_info}'
     
     
     def __stats__(self, prefix=''):
