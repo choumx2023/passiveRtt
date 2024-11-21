@@ -97,53 +97,135 @@ def setup_logging(name='network_monitor'):
 
     logger = logging.getLogger(name)
     return logger
+
 def main(dir_path, output_dir):
+    # 初始化计数器和 RTT 表
     count = 0
     tcptrace_table = RTTTable()
+    
+    # 设置日志记录
     logger = setup_logging('tcptrace')
+    
+    # 创建网络流量监控器实例，命名为 tcptrace，并关闭异常检测
     tcptrace_monitor = NetworkTrafficMonitor(name='tcptrace', check_anomalies=False, logger=logger)
+    
+    # 获取指定目录下的所有文件名并排序
     filenames = sorted(os.listdir(dir_path))
+    
+    # 遍历每个文件
     for filename in filenames:
+        # 初始化最小和最大时间
         min_time = -1
         max_time = 0
+        
+        # 确保输出目录存在，不存在则创建
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
+        
+        # 仅处理 .txt 文件
         if filename.endswith(".txt"):
-            count += 1
+            count += 1  # 更新处理文件计数器
+            
+            # 提取 RTT（往返时间）信息
             connections = extract_rtt(f"{dir_path}/{filename}")
+            
+            # 遍历每个连接
             for connection in connections:
-                value = {'rtt_samples': connection['rtt_samples'], 'first_packet': connection['first_packet'], 'last_packet': connection['last_packet'], 'rtt_min': connection['rtt_min'], 'rtt_max': connection['rtt_max'], 'rtt_avg': connection['rtt_avg'], 'port_a' : connection['host_a']['port'], 'port_b' : connection['host_b']['port']}
-
+                # 初始化连接数据字典，包含 RTT 采样和包信息
+                value = {
+                    'rtt_samples': connection['rtt_samples'],
+                    'first_packet': connection['first_packet'],
+                    'last_packet': connection['last_packet'],
+                    'rtt_min': connection['rtt_min'],
+                    'rtt_max': connection['rtt_max'],
+                    'rtt_avg': connection['rtt_avg'],
+                    'port_a': connection['host_a']['port'],
+                    'port_b': connection['host_b']['port']
+                }
+                
+                # 更新最小和最大时间
                 if connection['first_packet'] < min_time or min_time == -1:
                     min_time = connection['first_packet']
                 if connection['last_packet'] > max_time:
                     max_time = connection['last_packet']
+                
+                # 获取源和目标 IP 地址
                 src_ip = connection['host_a']['ip']
                 dst_ip = connection['host_b']['ip']
+                
+                # 确定传输方向
                 dir, reversed_dir = 'forward', 'backward'
                 if ipaddress.ip_address(src_ip) > ipaddress.ip_address(dst_ip):
+                    # 如果源 IP 大于目标 IP，交换它们的顺序
                     src_ip, dst_ip = dst_ip, src_ip
                     dir, reversed_dir = reversed_dir, dir
+                
+                # 检查 RTT 样本是否存在，并处理第一个样本
                 if connection['rtt_samples'][0] != 0:
-                    value1 = {'rtt': connection['rtt_min'][0], 'timestamp': connection['last_packet'], 'types': 'tcptrace'}
-                    tcptrace_table.add_rtt_sample(src_ip=src_ip, dst_ip=dst_ip, rtt= value1['rtt'], timestamp=value1['timestamp'], types='tcptrace', direction=dir)
-                    tcptrace_monitor.add_or_update_ip_with_rtt(dst_ip if dir == 'forward' else src_ip, 'TCP', 'tcptrace', value1['rtt'], timestamp=value1['timestamp'])
+                    value1 = {
+                        'rtt': connection['rtt_min'][0],
+                        'timestamp': connection['last_packet'],
+                        'types': 'tcptrace'
+                    }
+                    # 将 RTT 样本添加到 RTT 表
+                    tcptrace_table.add_rtt_sample(
+                        src_ip=src_ip,
+                        dst_ip=dst_ip,
+                        rtt=value1['rtt'],
+                        timestamp=value1['timestamp'],
+                        types='tcptrace',
+                        direction=dir
+                    )
+                    # 更新 RTT 信息到监控器
+                    tcptrace_monitor.add_or_update_ip_with_rtt(
+                        dst_ip if dir == 'forward' else src_ip,
+                        'TCP',
+                        'tcptrace',
+                        value1['rtt'],
+                        timestamp=value1['timestamp']
+                    )
+                
+                # 处理第二个样本
                 if connection['rtt_samples'][1] != 0:
-                    value2 = {'rtt': connection['rtt_min'][1], 'timestamp': connection['last_packet'], 'types': 'tcptrace'}
-                    tcptrace_table.add_rtt_sample(src_ip=src_ip, dst_ip=dst_ip, rtt= value2['rtt'], timestamp=value2['timestamp'], types='tcptrace', direction=reversed_dir)
-                    tcptrace_monitor.add_or_update_ip_with_rtt(src_ip if reversed_dir == 'backward' else dst_ip, 'TCP', 'tcptrace', value2['rtt'],timestamp=value2['timestamp'])
+                    value2 = {
+                        'rtt': connection['rtt_min'][1],
+                        'timestamp': connection['last_packet'],
+                        'types': 'tcptrace'
+                    }
+                    tcptrace_table.add_rtt_sample(
+                        src_ip=src_ip,
+                        dst_ip=dst_ip,
+                        rtt=value2['rtt'],
+                        timestamp=value2['timestamp'],
+                        types='tcptrace',
+                        direction=reversed_dir
+                    )
+                    tcptrace_monitor.add_or_update_ip_with_rtt(
+                        src_ip if reversed_dir == 'backward' else dst_ip,
+                        'TCP',
+                        'tcptrace',
+                        value2['rtt'],
+                        timestamp=value2['timestamp']
+                    )
+                
+                # 更新 RTT 表的最大和最小时间
                 tcptrace_table.max_time = max_time
                 tcptrace_table.min_time = min_time
                 
-                # 比较这些连接在规定时间内，测量结果/baseline/tcptrace之间的差异
+                # 进行连接的测量结果与 baseline/tcptrace 的差异比较（注释中标出未实现）
+                
         else:
-            continue
+            continue  # 跳过非 .txt 文件
+
+    # 使用 pickle 序列化并保存 RTT 表和监控器到输出目录
     save_data_with_pickle(tcptrace_table, os.path.join(output_dir, 'new_tcptrace.pkl'))
     save_data_with_pickle(tcptrace_monitor, os.path.join(output_dir, 'new_tcptrace_monitor.pkl'))
+    
+    # 将 RTT 表和监控器的内容输出到文本文件
     with open(os.path.join(output_dir, 'new_tcptrace.txt'), 'w') as file:
         sys.stdout = file
-        tcptrace_table.print_tcprtt()
-        tcptrace_monitor.print_trees()
+        tcptrace_table.print_tcprtt()  # 打印 RTT 表
+        tcptrace_monitor.print_trees()  # 打印监控器的 IP 树结构
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         print("Usage: python script.py <input_directory> <output_directory>")

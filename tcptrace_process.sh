@@ -61,7 +61,7 @@ echo "All files have been analyzed."
 # ./tcptrace_process.sh socurce_pcap tcp_output_dir current_output_dir analysis_output_dir timeslot  
 # ./tcptrace_process.sh ./test/test2.pcap ./tcptrace/tcpresult ./current/result output/test2 0.2
 # ./tcptrace_process.sh ./test/test5.pcap ./tcptrace/tcpresult5 ./current/result5 output/test5 0.2
-
+# ./tcptrace_process.sh ./test/mac.pcap ./tcptrace/tcpresultmac ./current/resultmac output/testmac 0.2
 python3.12 tcptrace_process.py "$output_dir2" "$output_directory" # 在output_directory中生成一个关键的pkl文件
 echo 'tcp process done'
 #python3 current_process.py "$input_file" "$output_data_dir" # 在output_data_dir中生成一个关键的pkl文件

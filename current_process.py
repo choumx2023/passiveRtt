@@ -133,7 +133,7 @@ def main(pcap_file, output_dir):
     print('Summary monitor saved.')
     final_monitor : NetworkTrafficMonitor
     final_monitor.print_trees()
-    #final_monitor.analyze_traffic()
+    final_monitor.analyze_traffic()
     with open(os.path.join(output_dir, 'icmp_dns_ntp_traffic_table.txt'), 'w') as f:
         sys.stdout = f
         traffic_table.print_tables()

@@ -18,6 +18,77 @@ import copy
 import matplotlib.pyplot as plt
 import numpy as np
 from statistics import mean, stdev
+# 这个class是基于Welford算法的，用于计算均值和方差
+# 分类不同协议的，只在同类协议内比较
+# 如果超过以当前窗口内的平均值为中心的一定范围后要报告，timestamp，rtt，delta给上层
+class Welford:
+    
+    def __init__(self):
+        self.timewindow = 1000
+        self.max_count = 1000
+        self.initial_limit = 3
+        self.data = deque()
+        self.initial_data = deque()
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.recorded_count = 0
+    
+    def update(self, x: float, timestamp: float):
+        if self.recorded_count < self.initial_limit:
+            self.initial_data.append((x, timestamp))
+            self.recorded_count += 1
+            if len(self.initial_data) == self.initial_limit:
+                self.init_mean = sum(x for x, _ in self.initial_data) / self.initial_limit
+                self.init_variance = sum((x - self.init_mean) ** 2 for x, _ in self.initial_data) / (self.initial_limit - 1)
+        elif (self.recorded_count <= 2 * self.initial_limit and abs(x - self.init_mean) < min(20, max(15 , 0.95 * math.sqrt(self.init_variance), math.sqrt(self.init_variance)))) or self.recorded_count > 2 * self.initial_limit:
+            self.data.append((x, timestamp))
+            self.count += 1
+            delta = x - self.mean
+            self.mean += delta / self.count
+            delta2 = x - self.mean
+            self.M2 += delta * delta2
+    def variance(self):
+        if self.count < 2:
+            return float('nan')
+        return self.M2 / (self.count - 1)
+    def get_mean(self):
+        return self.mean
+    def remove_outdated(self, current_time: float):
+        while self.data and (current_time - self.data[0][1]) > self.timewindow:
+            self.remove(self.data.popleft()[0])
+    def remove(self, x: float):
+        if self.count <= 1:
+            self.reset()
+        else:
+            self.count -= 1
+            delta = x - self.mean
+            self.mean -= delta / self.count
+            delta2 = x - self.mean
+            self.M2 -= delta * delta2
+    def reset(self):
+        self.count = 0
+        self.mean = 0
+        self.M2 = 0
+        self.data.clear()
+        self.initial_data.clear()
+    def str_variance(self):
+        return f'Count: {self.count}, Variance: {self.variance()}, Mean: {self.mean}'
+    # 比较当前协议的出现的问题，如果出现了问题，就返回True
+    def check_anomalies(self, newrtt: float, timestamp: float):
+        '''
+        如果和当前的平均值超过一定范围就返回True
+        '''
+        self.remove_outdated(timestamp)
+        # 检查数据点是否足够，计算方差并基于平均值判断是否异常
+        if self.count >= 5:
+            adjusted_variance = self.variance()
+            if not math.isnan(adjusted_variance):
+                threshold = min(20, max(10, 0.95 * math.sqrt(adjusted_variance)))
+                # 如果newrtt超出当前平均值（self.mean）加上阈值，则判定为异常
+                if newrtt > self.mean + threshold:
+                    return True
+        return False
 ## 00成功 01失败
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
@@ -151,17 +222,38 @@ class CompressedIPNode:
         self.contain_ip_number = 0
         self.contain_rtt_ip_number = 0
         self.stats = defaultdict(default_state)
+        
+        # 以下是用于检测RTT的统计数据
         self.rtt_records = defaultdict(list) # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.all_rtt_records = [] # 所有正常的rtt记录，不区分协议和模式
+        self.all_delta_records = [] # 所有正常的rtt delta记录，不区分协议和模式
+        
+        # 以下是用于检测RTT的异常数据
         self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.subnets_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
+        
+        # 以下是用于检测RTT的异常数据
+        self.anomalous_delta_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt, delta列表
+        self.subnets_delta_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt,delta列表
+        
         self.rtt_stats = {
             'min_rtt': float('inf'),
             'max_rtt': float('-inf'), 
         }
+        
         self.accumulate_normal_stats = defaultdict(int)
         self.accumulate_rtt_stats = defaultdict(int)
+        self.accumulate_delta_stats = defaultdict(int)
+        
         self.rtt_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        # 以下是用于检测网络活动的统计数据
+        
+        self.dns_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.icmp_ntp_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.tcp_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.all_delta_records = []
+        
+        # 以下记录流量记录
         self.flows_record = [] # live_span, ports, throughput, valid_throughput
     def aggregate_stats(self):
         '''
@@ -221,20 +313,60 @@ class CompressedIPNode:
         '''
         key = (protocol, pattern)
         value = (rtt, timestamp)
-        if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
-            current_mean_rtt = self.rtt_WelfordVariance.get_mean()
-            delta = rtt - current_mean_rtt
+        if protocol == "DNS":
+            welford_variance = self.dns_WelfordVariance
+        elif protocol in ["ICMP", "NTP"]:
+            welford_variance = self.icmp_ntp_WelfordVariance
+        elif protocol == "TCP":
+            welford_variance = self.tcp_WelfordVariance
+        else:
+            self.logger.warning(f"Unknown protocol: {protocol}")
+            return
+        # 这一个是检测全部rtt的 即将淘汰
+        # if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
+        #     current_mean_rtt = self.rtt_WelfordVariance.get_mean()
+        #     delta = rtt - current_mean_rtt
+        #     anormal_value = (rtt, timestamp, current_mean_rtt, delta)
+        #     # 子网检查
+        #     if self.check_anomal_in_subnets(key, anormal_value):
+        #         self.subnets_anomalous_rtts_records[key].append(anormal_value)
+        #     else:
+        #         self.anomalous_rtts_records[key].append(anormal_value)
+        #     if self.logger:
+        #         self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
+        # else: # 如果RTT正常，则记录到正常的rtt记录中
+        #     if check_anomalies == False:
+        #         self.rtt_WelfordVariance.update(rtt, timestamp)
+        #     self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+        #     self.rtt_records[key].append((rtt, timestamp))
+        #     self.all_rtt_records.append((rtt, timestamp))
+        #     if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
+        #         if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
+        #             self.rtt_stats['min_rtt'] = rtt
+        #         if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
+        #             self.rtt_stats['max_rtt'] = rtt
+                
+        #     if self.logger:
+        #         self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+        #     # 父母就不检查了，向上传递
+        #     if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
+        #         self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+        # 如果需要检查异常，则按照不同的协议进行检查
+        current_mean_rtt = welford_variance.get_mean()
+        delta = rtt - current_mean_rtt
+        if check_anomalies and welford_variance.check_anomalies(rtt, timestamp):
             anormal_value = (rtt, timestamp, current_mean_rtt, delta)
-            if self.check_anomal_in_subnets(key, anormal_value):
-                self.subnets_anomalous_rtts_records[key].append(anormal_value)
+            if self.check_delta_anomal_in_subnets(key, anormal_value):
+                self.subnets_delta_anomalous_rtts_records[key].append(anormal_value)
             else:
-                self.anomalous_rtts_records[key].append(anormal_value)
+                self.anomalous_delta_rtts_records[key].append(anormal_value)
             if self.logger:
-                self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
-        else: # 如果RTT正常，则记录到正常的rtt记录中
-            if check_anomalies == False:
-                self.rtt_WelfordVariance.update(rtt, timestamp)
-            self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+                self.logger.warning(f'Anomalous RTT delta detected: {protocol} - {rtt}:{delta}ms at {timestamp}')
+        # 如果不检查异常，或者没有检查出异常，则只记录到正常的rtt记录中
+        else:
+            welford_variance.update(rtt, timestamp)
+            if self.logger:
+                self.logger.info(f'Recorded RTT: {protocol} - {rtt}:{delta}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
             if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
@@ -242,13 +374,13 @@ class CompressedIPNode:
                     self.rtt_stats['min_rtt'] = rtt
                 if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
                     self.rtt_stats['max_rtt'] = rtt
-                
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             # 父母就不检查了，向上传递
             if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-
+             
+            
     def upstream_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float):
         '''
         This function records the upstream RTT values, it delivers the RTT values to the parent node.
@@ -431,7 +563,7 @@ class CompressedIPNode:
             record for record in self.subnets_anomalous_rtts_records.get(key, [])
             if record[1] + 10 > timestamp
         ]
-
+        
         # 合并同一时间窗内的异常RTT
         relevent_anomalous_rtts = anomalous_rtts + subnets_anomalous_rtts
         delta = anormal_value[3]
@@ -480,6 +612,21 @@ class CompressedIPNode:
             for (protocol, pattern), count in self.accumulate_rtt_stats.items()
             )
         return f'{prefix}RTT Datas :\n{rtt_info}'
+    def __delta__(self, prefix=''):
+        prefix1 = prefix + '  '
+        def format_output(deltas):
+            return f'\n{prefix1}  '.join([', '.join(map(str, deltas[i:i+8])) for i in range(0, len(deltas), 8)])
+        if (self.network.prefixlen >= 25 and self.network.version == 4) or (self.network.prefixlen >= 97 and self.network.version == 6):
+            # 如果没有异常的RTT Delta记录，则返回无异常数据
+            if self.anomalous_delta_rtts_records == {} and self.subnets_delta_anomalous_rtts_records == {}:
+                return f'{prefix}Delta Data: \n{prefix1}No delta data'
+            subnet_delta_anomalous_rtts = '\n'.join(
+                f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
+                for (protocol, pattern), rtts in self.subnets_delta_anomalous_rtts_records.items())
+            delta_info = '\n'.join(
+                f'{prefix1}{protocol}**{pattern} RTT count = {len(rtts)}:\n  {prefix1}{format_output(rtts)}'
+                for (protocol, pattern), rtts in self.anomalous_delta_rtts_records.items())
+            return f'{prefix}Delta Data: \n{prefix}  Subnets Delta Data: \n{subnet_delta_anomalous_rtts}\n{prefix}  Delta IP Data: \n{delta_info}'
     def __anormalies__(self, prefix=''):
         '''
         params:
@@ -725,6 +872,7 @@ class CompressedIPTrie:
         for child in node.children.values():
             self._collect_smallest_subnets_helper(child, smallest_subnets)
     def waterfall_trees(self, node : CompressedIPNode):
+        # 递归处理子节点
         if (node.network.prefixlen == 32 and node.network.version == 4) or (node.network.prefixlen == 128 and node.network.version == 6):
             node.contain_ip_number = 1
             total_length = 0
@@ -736,11 +884,14 @@ class CompressedIPTrie:
         node.contain_ip_number = 0
         node.contain_rtt_ip_number = 0
         is_bigger_network = (node.network.prefixlen <= 24 and node.network.version == 4) or (node.network.prefixlen <= 96 and node.network.version == 6)
+        # 递归处理子节点
         for child in node.children.values():
             self.waterfall_trees(child)        
+            # 更新节点的统计数据
             node.contain_ip_number += child.contain_ip_number
             node.contain_rtt_ip_number += child.contain_rtt_ip_number
-            if is_bigger_network:
+            # 如果是较大的网络，不需要累加RTT数据
+            if not is_bigger_network:
                 for (protocol, pattern), rtts in child.rtt_records.items():
                     node.accumulate_rtt_stats[(protocol, pattern)] += len(rtts)
                 for (protocol, action), details in child.stats.items():
@@ -897,6 +1048,7 @@ class NetworkTrafficMonitor:
             node = trie.find_node(ip)  # 确保节点被添加后重新获取它
         # 现在记录RTT数据，假设节点现在肯定存在
         if node:
+            # 如果self.check_anomalies为True，则检查异常
             node.record_rtt(protocol, pattern, rtt, timestamp, check_anomalies= self.check_anomalies)
         # 可选：检测异常情况
         if 0:
