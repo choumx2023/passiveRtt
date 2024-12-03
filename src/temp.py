@@ -88,7 +88,7 @@ def calculate_tcp_states(packet : dict):
         # 如果同时更新了两个range，说明是正常的数据包
         else:
             states['time_series'].append('backward normal')
-        class WelfordVariance:
+class WelfordVariance:
     '''
     This class implements the Welford algorithm for calculating the variance of a stream of data points.
     It handles an initial buffer of data points that are not used in anomaly detection until the buffer is filled.
@@ -345,7 +345,36 @@ def calculate_within_group_distance(values, centers, labels):
     for v, l in zip(values, labels):
         total_distance[l] += abs(v - centers[l])**2
         counts[l] += 1
-    return [math.sqrt(total_distance[l] / (counts[l] + 1e-8))  for l in range(2)]
+    return [math.sqrt(total_distance[l] / (counts[l] if counts[l] != 0 else 1))  for l in range(2)]
+def calculate_rank_sum(values, centers, labels):
+    rank_sum = [0, 0]
+    count = [0, 0]
+    rank = 0
+    for v, l in zip(values, labels):
+        rank += 1
+        rank_sum[l] += rank
+        count[l] += 1
+    result = [1.0 * rank_sum[l] / (count[l] if count[l] != 0 else 1) for l in range(2)]
+    result.append((rank + 1)/ 2.0)
+    if 0 in count:
+        if count[0] == 0:
+            result.append(0)
+            result.append( ( 1 + rank) / 2.0)
+        else:
+            result.append( ( 1 + rank) / 2.0)
+            result.append(0)
+    if result[0] <= result[1]:
+        result.append((1 + count[0]) / 2.0)
+        result.append( (rank + count [0] + 1 )/ 2.0)
+    else :
+        result.append( (rank + count [1] +1 ) / 2.0)
+        result.append((1 + count[1] ) / 2.0)
+    return result
+
+## 解析
+
+
+
 def detect_changes_with_kmeans(data, time_window, center_change_threshold=0.2, cumulative_change_threshold=0.5):
     """
     使用 K-means 聚类方法检测时序数据中的突变和逐渐上升变化。
@@ -367,6 +396,7 @@ def detect_changes_with_kmeans(data, time_window, center_change_threshold=0.2, c
     centers = None
     weights = None
     distance = None
+    rank_sum = None
     for i, (timestamp, value) in enumerate(data):
         # 添加新数据点到窗口
         window.append((timestamp, value))
@@ -380,6 +410,7 @@ def detect_changes_with_kmeans(data, time_window, center_change_threshold=0.2, c
             values_in_window = [val for _, val in window]
             centers, labels = kmeans_1d(values_in_window, k=2)
             distance = calculate_within_group_distance(values_in_window, centers, labels)
+            rank_sum = calculate_rank_sum(values_in_window, centers, labels)
             weights = [len([l for l in labels if l == 0]) / len(labels), len([l for l in labels if l == 1]) / len(labels)]
             centers.append(float(np.mean(values_in_window))) # 添加均值作为第三个聚类中心
             centers.append(centers[labels[-1]]) # 添加最后一个数据点作为第四个聚类中心
@@ -404,7 +435,7 @@ def detect_changes_with_kmeans(data, time_window, center_change_threshold=0.2, c
         else:
             status = 'normal'
 
-        results.append((i, timestamp, value, status, centers, weights, distance))
+        results.append((i, timestamp, value, status, centers, weights, distance, rank_sum))
 
     return results
 
@@ -416,6 +447,7 @@ data = [
         40, 45, 50, 55, 60,  # 逐渐上升
         60, 60, 60, 60, 60,  # 稳定高值段
         30, 30, 30, 30, 30,  # 突然下降
+        30,60,40,30,60,50,30,40,60,30,45,60,
     ])
 ]
 
@@ -427,6 +459,16 @@ cumulative_change_threshold = 0.5   # 聚类中心累计变化的阈值比例
 # 运行检测
 results = detect_changes_with_kmeans(data, time_window, center_change_threshold, cumulative_change_threshold)
 
+# 如果排名差别很大的话说明两个cluster的数据差别很大
+# 如果距离很小说明cluster内部的数据差别很小
+# 那该如何区分sudden change 和 gradual increase呢？
+# 1. sudden change: 两个cluster的rank sum差别很大，且距离很小
+# 2. gradual increase: 两个cluster的rank sum差别很小，且距离很小
+# 3. normal: 两个cluster的rank sum差别很小，且距离很大
+
+# 如果是guadual change。 
+
+
 # 输出结果
-for idx, timestamp, value, status, centers, weights, distance in results:
-    print(f"索引: {idx}, 时间: {timestamp}, 值: {value}, 状态: {status}, 聚类中心: {centers}, 权重: {weights}, 距离: {distance}")
+for idx, timestamp, value, status, centers, weights, distance, rank in results:
+    print(f"索引: {idx}, 时间: {timestamp}, 值: {value}, 状态: {status}, 聚类中心: {centers}, 权重: {weights}, 距离: {distance}, 排名: {rank}")

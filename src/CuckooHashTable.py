@@ -24,14 +24,17 @@ class ListBuffer:
         self.size = size
         self.buffer = []
         self.count = 0
-        # 如果是TCP，需要记录TCP状态
+    
+    def __state__(self) -> str:
+        return f"ListBuffer(size={self.size}, buffer={self.buffer}), count={self.count}"
+    
     def add(self, item : dict) -> None:
         '''
         params:
             item: a dictionary containing the item to be added
 
         to-do:
-            为什么要设置len不等于1的条件
+            为什么要设置len不等于1的条件，因为item的长度为1的话说明这个是个验证可不可以插入，而不是真实的值
         '''
         if len(item) == 1:
             return

@@ -21,74 +21,200 @@ from statistics import mean, stdev
 # 这个class是基于Welford算法的，用于计算均值和方差
 # 分类不同协议的，只在同类协议内比较
 # 如果超过以当前窗口内的平均值为中心的一定范围后要报告，timestamp，rtt，delta给上层
-class Welford:
+from datetime import datetime, timedelta
+import numpy as np
+import math
+def kmeans_1d(values, k=2, max_iter=10):
+    """
+    简化的一维 K-means 聚类算法。
+
+    参数：
+    - values: 一维数据列表
+    - k: 聚类数
+    - max_iter: 最大迭代次数
+
+    返回：
+    - centers: 聚类中心列表
+    - labels: 每个数据点的聚类标签列表
+    """
+    # 初始化聚类中心，随机选择数据点
+    centers = [values[i] for i in range(k)]
+    for _ in range(max_iter):
+        clusters = [[] for _ in range(k)]
+        labels = []
+        # 分配数据点到最近的聚类中心
+        for v in values:
+            distances = [abs(v - c) for c in centers]
+            min_idx = distances.index(min(distances))
+            clusters[min_idx].append(v)
+            labels.append(min_idx)
+        # 更新聚类中心
+        new_centers = []
+        for cluster in clusters:
+            if cluster:
+                new_centers.append(sum(cluster) / len(cluster))
+            else:
+                # 如果聚类为空，保持原有中心
+                new_centers.append(centers[clusters.index(cluster)])
+        # 检查是否收敛
+        if new_centers == centers:
+            break
+        centers = new_centers
+    return centers, labels
+def calculate_within_group_distance(values, centers, labels):
+    '''
+    params:
+        values: list of values
+        centers: list of centers
+        labels: list of labels
+    return :
+        [center0_distance, center1_distance]
+    '''
+    total_distance = [0, 0]
+    counts = [0, 0]
+    for v, l in zip(values, labels):
+        total_distance[l] += abs(v - centers[l])**2
+        counts[l] += 1
+    return [math.sqrt(total_distance[l] / (counts[l] if counts[l] != 0 else 1))  for l in range(2)]
+def calculate_rank_sum(values, labels):
+    '''
+    params:
+        values: list of values
+        labels: list
+    return:
+        [center0_rank_sum, center1_rank_sum, mean_rank_sum, center0_max_rank_sum, center1_max_rank_sum]
+    '''
+    rank_distance = [0, 0]
+    rank_sum = [0, 0]
+    count = [0, 0]
+    rank = 0
+    for v, l in zip(values, labels):
+        rank += 1
+        rank_sum[l] += rank
+        count[l] += 1
+        rank_distance[l] += rank ** 2
+    rank_distance = [rank_distance[l] - (rank_sum[l] ** 2) / (count[l] if count[l] != 0 else 1) for l in range(2)]
+    result = [1.0 * rank_sum[l] / (count[l] if count[l] != 0 else 1) for l in range(2)]
+    
+    result.append((rank + 1)/ 2.0) 
+    if 0 in count:
+        if count[0] == 0:
+            result.append(0)
+            result.append( ( 1 + rank) / 2.0)
+        else:
+            result.append( ( 1 + rank) / 2.0)
+            result.append(0)
+    if result[0] <= result[1]:
+        result.append((1 + count[0]) / 2.0)
+        result.append( (rank + count [0] + 1 )/ 2.0)
+    else :
+        result.append( (rank + count [1] +1 ) / 2.0)
+        result.append((1 + count[1] ) / 2.0)
+    return result
+
+## 解析
+
+
+
+# 示例数据
+data = [
+    (datetime(2023, 1, 1, 0, 0, i), val) for i, val in enumerate([
+        10, 10, 10, 10, 10,  # 稳定段
+        15, 20, 25, 30, 35,  # 逐渐上升
+        40, 45, 50, 55, 60,  # 逐渐上升
+        60, 60, 60, 60, 60,  # 稳定高值段
+        30, 30, 30, 30, 30,  # 突然下降
+        30,60,40,30,60,50,30,40,60,30,45,60,
+    ])
+]
+
+# 参数设置
+time_window = timedelta(seconds=4)  # 时间窗口大小，例如5秒
+center_change_threshold = 0.3       # 聚类中心单次变化的阈值比例
+cumulative_change_threshold = 0.5   # 聚类中心累计变化的阈值比例
+
+# 运行检测
+# results = detect_changes_with_kmeans(data, time_window, center_change_threshold, cumulative_change_threshold)
+class Analyser:
     
     def __init__(self):
-        self.timewindow = 1000
-        self.max_count = 1000
-        self.initial_limit = 3
-        self.data = deque()
-        self.initial_data = deque()
-        self.count = 0
-        self.mean = 0
-        self.M2 = 0
-        self.recorded_count = 0
-    
-    def update(self, x: float, timestamp: float):
-        if self.recorded_count < self.initial_limit:
-            self.initial_data.append((x, timestamp))
-            self.recorded_count += 1
-            if len(self.initial_data) == self.initial_limit:
-                self.init_mean = sum(x for x, _ in self.initial_data) / self.initial_limit
-                self.init_variance = sum((x - self.init_mean) ** 2 for x, _ in self.initial_data) / (self.initial_limit - 1)
-        elif (self.recorded_count <= 2 * self.initial_limit and abs(x - self.init_mean) < min(20, max(15 , 0.95 * math.sqrt(self.init_variance), math.sqrt(self.init_variance)))) or self.recorded_count > 2 * self.initial_limit:
-            self.data.append((x, timestamp))
-            self.count += 1
-            delta = x - self.mean
-            self.mean += delta / self.count
-            delta2 = x - self.mean
-            self.M2 += delta * delta2
-    def variance(self):
-        if self.count < 2:
-            return float('nan')
-        return self.M2 / (self.count - 1)
-    def get_mean(self):
-        return self.mean
-    def remove_outdated(self, current_time: float):
-        while self.data and (current_time - self.data[0][1]) > self.timewindow:
-            self.remove(self.data.popleft()[0])
-    def remove(self, x: float):
-        if self.count <= 1:
-            self.reset()
+        self.windows = deque()
+        self.results = []
+        self.time_window = 100
+    def add(self, key, rtt, timestamp):
+        conclusion = self.detect_changes_with_kmeans(rtt, timestamp)
+        self.results.append(rtt, timestamp)
+        
+    def detect_changes_with_kmeans(self, rtt_sample, timestamp):
+        """
+        使用 K-means 聚类方法检测时序数据中的突变和逐渐上升变化。
+
+        参数：
+        - time_window: 时间窗口大小，timedelta 对象
+        - center_change_threshold: 聚类中心单次变化的阈值比例
+        - cumulative_change_threshold: 聚类中心累计变化的阈值比例
+
+        返回：
+        - results: 包含每个数据点的状态列表，元素格式为 (index, timestamp, value, status)
+          - status: 'normal', 'sudden_change', 'gradual_increase'
+        """
+        if not self.windows.empty():
+            raise ValueError("时序数据为空，请先填充数据。")
+        
+        prev_centers = None  # 前一个时间窗口的聚类中心
+        timestamp = rtt_sample[0]
+        rtt = rtt_sample[1]
+        self.window.append(rtt_sample)
+        while self.window and (timestamp - self.window[0][0]) > self.timewindow:
+            self.window.popleft()
+        if len(self.window) >= 10:
+            values_in_window = [val for _, val in self.window]
+            centers, labels = self.kmeans_1d(values_in_window, k=2)
+            distance = calculate_within_group_distance(values_in_window, centers, labels)
+            rank_sum, rank_distance  = calculate_rank_sum(values_in_window, centers, labels)
+            weights = [
+                len([l for l in labels if l == 0]) / len(labels),
+                len([l for l in labels if l == 1]) / len(labels)
+            ]
+            label = labels[-1]
+            centers.append(float(np.mean(values_in_window)))
+            centers.append(centers[labels[-1]])
+            # centers = [centers[0], centers[1], np.mean(values_in_window), centers[labels[-1]]]
+            
+            status = 'normal'
+            # 如果距离都比较小而且中心接近
+            if abs(centers[0] - centers[1]) <= 10 and distance[0] < 10 and distance[1] < 10:
+                status = 'normal'
+            # 如果散步，但是时间戳的rank sum比较接近中心
+            elif (
+                distance[0] < 10 and distance[1] < 10 and abs(centers[0] - centers[1]) > 10 and 
+                ( abs(rank_sum[0] - rank_sum[3]) + abs(rank_sum[1] - rank_sum[4]) ) < 1.5
+                ):
+                status = 'turbulence'
+            # 尖峰
+            elif weights[label] < 0.2 and abs(centers[0] - centers[1]) > 20:
+                status = 'sudden_change'
+            # 逐渐上升
+            elif weights[label] > 0.2 and weights[label] < 0.8 and (abs(rank_sum[0] - rank_sum[3]) + abs(rank_sum[1] - rank_sum[4])) <1.5:
+                status = 'gradual_increase'
+            else:
+                status = 'unknown' 
+        # 数量不够
         else:
-            self.count -= 1
-            delta = x - self.mean
-            self.mean -= delta / self.count
-            delta2 = x - self.mean
-            self.M2 -= delta * delta2
-    def reset(self):
-        self.count = 0
-        self.mean = 0
-        self.M2 = 0
-        self.data.clear()
-        self.initial_data.clear()
-    def str_variance(self):
-        return f'Count: {self.count}, Variance: {self.variance()}, Mean: {self.mean}'
-    # 比较当前协议的出现的问题，如果出现了问题，就返回True
-    def check_anomalies(self, newrtt: float, timestamp: float):
-        '''
-        如果和当前的平均值超过一定范围就返回True
-        '''
-        self.remove_outdated(timestamp)
-        # 检查数据点是否足够，计算方差并基于平均值判断是否异常
-        if self.count >= 5:
-            adjusted_variance = self.variance()
-            if not math.isnan(adjusted_variance):
-                threshold = min(20, max(10, 0.95 * math.sqrt(adjusted_variance)))
-                # 如果newrtt超出当前平均值（self.mean）加上阈值，则判定为异常
-                if newrtt > self.mean + threshold:
-                    return True
-        return False
+            status = 'unknown'
+        self.results.append((timestamp, rtt, status, centers, label, weights, distance, rank_sum))
+        return {
+            'timestamp': timestamp,
+            'value': rtt,
+            'status': status,
+            'centers': centers,
+            'label': label,
+            'weights': weights,
+            'distance': distance,
+            'rank_sum': rank_sum
+        }
+
+
 ## 00成功 01失败
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
@@ -223,6 +349,20 @@ class CompressedIPNode:
         self.contain_rtt_ip_number = 0
         self.stats = defaultdict(default_state)
         
+        # 以下是对延迟估计的统计数据
+        self.delay_estimation = {
+            'ICMP' : [],
+            'NTP' : [],
+            'DNS' : [],
+            'TCP-Handshake' : [],
+            'TCP-Normal' : [],
+            'TCP-Timestamp' : [],
+            'link_delay' : [],
+            'TCP_Apllication_delay' : [],
+            'DNS_iteration_delay' : []
+        }
+        
+        
         # 以下是用于检测RTT的统计数据
         self.rtt_records = defaultdict(list) # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.all_rtt_records = [] # 所有正常的rtt记录，不区分协议和模式
@@ -232,7 +372,7 @@ class CompressedIPNode:
         self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         self.subnets_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         
-        # 以下是用于检测RTT的异常数据
+        # 以下是用于检测RTT变化的异常数据
         self.anomalous_delta_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt, delta列表
         self.subnets_delta_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt,delta列表
         
@@ -322,51 +462,22 @@ class CompressedIPNode:
         else:
             self.logger.warning(f"Unknown protocol: {protocol}")
             return
-        # 这一个是检测全部rtt的 即将淘汰
-        # if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
-        #     current_mean_rtt = self.rtt_WelfordVariance.get_mean()
-        #     delta = rtt - current_mean_rtt
-        #     anormal_value = (rtt, timestamp, current_mean_rtt, delta)
-        #     # 子网检查
-        #     if self.check_anomal_in_subnets(key, anormal_value):
-        #         self.subnets_anomalous_rtts_records[key].append(anormal_value)
-        #     else:
-        #         self.anomalous_rtts_records[key].append(anormal_value)
-        #     if self.logger:
-        #         self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
-        # else: # 如果RTT正常，则记录到正常的rtt记录中
-        #     if check_anomalies == False:
-        #         self.rtt_WelfordVariance.update(rtt, timestamp)
-        #     self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
-        #     self.rtt_records[key].append((rtt, timestamp))
-        #     self.all_rtt_records.append((rtt, timestamp))
-        #     if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
-        #         if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
-        #             self.rtt_stats['min_rtt'] = rtt
-        #         if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
-        #             self.rtt_stats['max_rtt'] = rtt
-                
-        #     if self.logger:
-        #         self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
-        #     # 父母就不检查了，向上传递
-        #     if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
-        #         self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-        # 如果需要检查异常，则按照不同的协议进行检查
-        current_mean_rtt = welford_variance.get_mean()
-        delta = rtt - current_mean_rtt
-        if check_anomalies and welford_variance.check_anomalies(rtt, timestamp):
+        #这一个是检测全部rtt的 即将淘汰===MARK
+        if check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
+            current_mean_rtt = self.rtt_WelfordVariance.get_mean()
+            delta = rtt - current_mean_rtt
             anormal_value = (rtt, timestamp, current_mean_rtt, delta)
-            if self.check_delta_anomal_in_subnets(key, anormal_value):
-                self.subnets_delta_anomalous_rtts_records[key].append(anormal_value)
+            # 子网检查
+            if self.check_anomal_in_subnets(key, anormal_value):
+                self.subnets_anomalous_rtts_records[key].append(anormal_value)
             else:
-                self.anomalous_delta_rtts_records[key].append(anormal_value)
+                self.anomalous_rtts_records[key].append(anormal_value)
             if self.logger:
-                self.logger.warning(f'Anomalous RTT delta detected: {protocol} - {rtt}:{delta}ms at {timestamp}')
-        # 如果不检查异常，或者没有检查出异常，则只记录到正常的rtt记录中
-        else:
-            welford_variance.update(rtt, timestamp)
-            if self.logger:
-                self.logger.info(f'Recorded RTT: {protocol} - {rtt}:{delta}ms at {timestamp}')
+                self.logger.warning(f'Anomalous RTT detected: {protocol} - {rtt}ms at {timestamp}')
+        else: # 如果RTT正常，则记录到正常的rtt记录中
+            if check_anomalies == False:
+                self.rtt_WelfordVariance.update(rtt, timestamp)
+            self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
             self.all_rtt_records.append((rtt, timestamp))
             if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
@@ -374,11 +485,41 @@ class CompressedIPNode:
                     self.rtt_stats['min_rtt'] = rtt
                 if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
                     self.rtt_stats['max_rtt'] = rtt
+                
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             # 父母就不检查了，向上传递
             if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
                 self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+        
+        # # 如果需要检查异常，则按照不同的协议进行检查
+        # current_mean_rtt = welford_variance.get_mean()
+        # delta = rtt - current_mean_rtt
+        # if check_anomalies and welford_variance.check_anomalies(rtt, timestamp):
+        #     anormal_value = (rtt, timestamp, current_mean_rtt, delta)
+        #     if self.check_anomal_in_subnets(key, anormal_value):
+        #         self.subnets_delta_anomalous_rtts_records[key].append(anormal_value)
+        #     else:
+        #         self.anomalous_delta_rtts_records[key].append(anormal_value)
+        #     if self.logger:
+        #         self.logger.warning(f'Anomalous RTT delta detected: {protocol} - {rtt}:{delta}ms at {timestamp}')
+        # # 如果不检查异常，或者没有检查出异常，则只记录到正常的rtt记录中
+        # else:
+        #     welford_variance.update(rtt, timestamp)
+        #     if self.logger:
+        #         self.logger.info(f'Recorded RTT: {protocol} - {rtt}:{delta}ms at {timestamp}')
+        #     self.rtt_records[key].append((rtt, timestamp))
+        #     self.all_rtt_records.append((rtt, timestamp))
+        #     if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
+        #         if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
+        #             self.rtt_stats['min_rtt'] = rtt
+        #         if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
+        #             self.rtt_stats['max_rtt'] = rtt
+        #     if self.logger:
+        #         self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+        #     # 父母就不检查了，向上传递
+        #     if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
+        #         self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
              
             
     def upstream_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float):
