@@ -88,29 +88,17 @@ def calculate_rank_sum(values, labels):
     rank_sum = [0, 0]
     count = [0, 0]
     rank = 0
-    for v, l in zip(values, labels):
+    for l in labels:
         rank += 1
         rank_sum[l] += rank
         count[l] += 1
         rank_distance[l] += rank ** 2
+
     rank_distance = [rank_distance[l] - (rank_sum[l] ** 2) / (count[l] if count[l] != 0 else 1) for l in range(2)]
     result = [1.0 * rank_sum[l] / (count[l] if count[l] != 0 else 1) for l in range(2)]
-    
-    result.append((rank + 1)/ 2.0) 
-    if 0 in count:
-        if count[0] == 0:
-            result.append(0)
-            result.append( ( 1 + rank) / 2.0)
-        else:
-            result.append( ( 1 + rank) / 2.0)
-            result.append(0)
-    if result[0] <= result[1]:
-        result.append((1 + count[0]) / 2.0)
-        result.append( (rank + count [0] + 1 )/ 2.0)
-    else :
-        result.append( (rank + count [1] +1 ) / 2.0)
-        result.append((1 + count[1] ) / 2.0)
-    return result
+    result.append(count[0] / 2), result.append(count[1] / 2), result.append((count[0] + count[1]) / 2) , result.append(len(labels))
+    print('result', result)
+    return result, rank_distance    
 
 ## 解析
 
@@ -138,13 +126,17 @@ cumulative_change_threshold = 0.5   # 聚类中心累计变化的阈值比例
 class Analyser:
     
     def __init__(self):
-        self.windows = deque()
+        self.window = deque()
         self.results = []
-        self.time_window = 100
+        self.time_window = 1000
+        self.conclusion = []
     def add(self, key, rtt, timestamp):
         conclusion = self.detect_changes_with_kmeans(rtt, timestamp)
-        self.results.append(rtt, timestamp)
-        
+        self.results.append((rtt, timestamp))
+        self.conclusion.append(conclusion)
+    def __print__(self):
+        for i in self.conclusion:
+            print(i)
     def detect_changes_with_kmeans(self, rtt_sample, timestamp):
         """
         使用 K-means 聚类方法检测时序数据中的突变和逐渐上升变化。
@@ -158,20 +150,16 @@ class Analyser:
         - results: 包含每个数据点的状态列表，元素格式为 (index, timestamp, value, status)
           - status: 'normal', 'sudden_change', 'gradual_increase'
         """
-        if not self.windows.empty():
-            raise ValueError("时序数据为空，请先填充数据。")
-        
-        prev_centers = None  # 前一个时间窗口的聚类中心
-        timestamp = rtt_sample[0]
-        rtt = rtt_sample[1]
-        self.window.append(rtt_sample)
-        while self.window and (timestamp - self.window[0][0]) > self.timewindow:
+        centers, label, weights, distance, rank_sum = None, None, None, None, None
+        self.window.append((timestamp, rtt_sample))
+        while self.window and (timestamp - self.window[0][0]) > self.time_window:
             self.window.popleft()
         if len(self.window) >= 10:
             values_in_window = [val for _, val in self.window]
-            centers, labels = self.kmeans_1d(values_in_window, k=2)
+            centers, labels = kmeans_1d(values_in_window, k=2)
+            print(len(values_in_window))
             distance = calculate_within_group_distance(values_in_window, centers, labels)
-            rank_sum, rank_distance  = calculate_rank_sum(values_in_window, centers, labels)
+            rank_sum, rank_distance  = calculate_rank_sum(centers, labels)
             weights = [
                 len([l for l in labels if l == 0]) / len(labels),
                 len([l for l in labels if l == 1]) / len(labels)
@@ -202,10 +190,10 @@ class Analyser:
         # 数量不够
         else:
             status = 'unknown'
-        self.results.append((timestamp, rtt, status, centers, label, weights, distance, rank_sum))
+        self.results.append((timestamp, rtt_sample, status, centers, label, weights, distance, rank_sum))
         return {
             'timestamp': timestamp,
-            'value': rtt,
+            'value': rtt_sample,
             'status': status,
             'centers': centers,
             'label': label,
@@ -1433,7 +1421,24 @@ def test():
     monitor = read_pickle('current_monitor.pkl')
     print(monitor)
     monitor.print_trees()
+def analyser_test():
+    analyesr = Analyser()
+    data = [(28.199, 1669599832.325483), (29.334, 1669599832.327243), (37.837, 1669599832.367833), (27.378, 1669599832.370148), (40.122, 1669599832.370175), (27.74, 1669599832.400521), (34.214, 1669599832.404559), (42.005, 1669599832.409983),
+        (27.42, 1669599832.428306), (26.87, 1669599832.832592), (27.782, 1669599832.864788), (28.104, 1669599833.021115), (33.982, 1669599833.449475), (28.179, 1669599833.474618), (28.817, 1669599833.474629), (28.711, 1669599833.503645),
+        (29.224, 1669599833.50903), (29.432, 1669599833.50905), (27.861, 1669599833.518924), (27.414, 1669599833.521497), (27.293, 1669599833.531334), (29.573, 1669599833.53364), (27.253, 1669599833.533689), (27.687, 1669599833.537433),
+        (38.653, 1669599833.547905), (26.091, 1669599833.550703), (27.912, 1669599833.552492), (28.522, 1669599833.562895), (29.496, 1669599833.567764), (27.981, 1669599833.567887), (38.539, 1669599833.572476), (27.501, 1669599833.590776),
+        (41.675, 1669599833.592585), (40.019, 1669599833.592692), (27.927, 1669599833.596009), (28.025, 1669599833.596095), (28.29, 1669599833.809434), (28.506, 1669599833.809467), (28.533, 1669599833.809494), (30.788, 1669599833.811707),
+        (32.41, 1669599833.813829), (34.117, 1669599833.815741), (36.495, 1669599833.817669), (40.016, 1669599833.821601), (27.962, 1669599833.836305), (28.147, 1669599833.836321), (28.149, 1669599833.836325), (26.586, 1669599833.836328),
+        (29.752, 1669599833.838087), (30.587, 1669599833.840242), (27.118, 1669599833.866052), (27.32, 1669599833.866119), (27.384, 1669599833.866212), (27.416, 1669599833.866263), (27.46, 1669599833.868453), (30.479, 1669599833.873287),
+        (27.387, 1669599833.878731), (28.117, 1669599833.89671), (32.262, 1669599833.89895), (34.989, 1669599833.901588), (27.872, 1669599833.909281), (35.863, 1669599833.909315), (28.252, 1669599833.90934), (36.249, 1669599833.917314),
+        (39.881, 1669599833.920464), (28.462, 1669599833.925552), (28.253, 1669599833.927469), (25.737, 1669599833.927543), (28.692, 1669599833.938198), (40.811, 1669599833.950263), (26.677, 1669599833.977487), (28.289, 1669599833.995319),
+        (34.902, 1669599834.017424), (28.188, 1669599834.055537), (27.682, 1669599834.087348), (38.622, 1669599834.126248), (27.931, 1669599834.154336), (32.452, 1669599834.206802), (36.687, 1669599834.823153), (28.479, 1669599837.221856),
+        (28.565, 1669599837.221942), (28.41, 1669599852.407904), (31.347, 1669599857.513557), (28.929, 1669599857.542659)]
+    key = ('TCP', 'Normal')
+    for rtt, timestamp in data:
+        analyesr.add(key, rtt, timestamp)
+    analyesr.__print__()
 if __name__ == "__main__":
-    test()
+    analyser_test()
 
 
