@@ -34,8 +34,8 @@ def kmeans_1d(values, k=2, max_iter=10):
     - max_iter: 最大迭代次数
 
     返回：
-    - centers: 聚类中心列表
-    - labels: 每个数据点的聚类标签列表
+    - centers: 聚类中心列表 [center 0, center 1]
+    - labels: 每个数据点的聚类标签列表 [label 0, label 1, ...]
     """
     # 初始化聚类中心，随机选择数据点
     centers = [values[i] for i in range(k)]
@@ -82,12 +82,24 @@ def calculate_rank_sum(values, labels):
         values: list of values
         labels: list
     return:
-        [center0_rank_sum, center1_rank_sum, mean_rank_sum, center0_max_rank_sum, center1_max_rank_sum]
+        [
+            0 : average rank sum of label 0,
+            1 : average rank sum of label 1,
+            2 : min rank distance from edge of label 0,
+            3 : min rank distance from edge of label 1,
+            4 : max rank distance from edge of label 0,
+        ]
+    对于min rank distance实际上是说明当前聚类中心距离最小的秩0和最大秩n-1的距离
+    比如15个数据，序号为0-14，如果两个聚类的大小为4和11，那么第一个聚类的最小的距离是1.5，第二个聚类的最小距离是5
+    也就是说第二个聚类有11个数据，最小的秩是0+1+2+3 = 6，平均是1.5，最大是14+13+12+11 = 12.5他们分别到两个边界（0，14）都是1.5
+     
     '''
     rank_distance = [0, 0]
     rank_sum = [0, 0]
     count = [0, 0]
     rank = 0
+    e = []
+    lens = len(labels)
     for l in labels:
         rank += 1
         rank_sum[l] += rank
@@ -96,9 +108,9 @@ def calculate_rank_sum(values, labels):
 
     rank_distance = [rank_distance[l] - (rank_sum[l] ** 2) / (count[l] if count[l] != 0 else 1) for l in range(2)]
     result = [1.0 * rank_sum[l] / (count[l] if count[l] != 0 else 1) for l in range(2)]
-    result.append(count[0] / 2), result.append(count[1] / 2), result.append((count[0] + count[1]) / 2) , result.append(len(labels))
-    print('result', result)
-    return result, rank_distance    
+    e =  [ (count[0] - 1) / 2, (-1 + count[1]) / 2, min (result[0], lens - 1 - result[0]), min(result[1], lens - 1 - result[1])]
+    result.append((len(labels) - 1) / 2)
+    return result, rank_distance, e  
 
 ## 解析
 
@@ -125,12 +137,13 @@ cumulative_change_threshold = 0.5   # 聚类中心累计变化的阈值比例
 # results = detect_changes_with_kmeans(data, time_window, center_change_threshold, cumulative_change_threshold)
 class Analyser:
     
-    def __init__(self):
+    def __init__(self, type):
         self.window = deque()
         self.results = []
-        self.time_window = 1000
+        self.time_window = 10
         self.conclusion = []
-    def add(self, key, rtt, timestamp):
+        self.type = type
+    def add(self, rtt, timestamp):
         conclusion = self.detect_changes_with_kmeans(rtt, timestamp)
         self.results.append((rtt, timestamp))
         self.conclusion.append(conclusion)
@@ -150,16 +163,18 @@ class Analyser:
         - results: 包含每个数据点的状态列表，元素格式为 (index, timestamp, value, status)
           - status: 'normal', 'sudden_change', 'gradual_increase'
         """
-        centers, label, weights, distance, rank_sum = None, None, None, None, None
+        centers, label, weights, distance, rank_sum, rank_distance, e = [None] * 7
+        status = 'unknown'
         self.window.append((timestamp, rtt_sample))
         while self.window and (timestamp - self.window[0][0]) > self.time_window:
             self.window.popleft()
         if len(self.window) >= 10:
             values_in_window = [val for _, val in self.window]
             centers, labels = kmeans_1d(values_in_window, k=2)
+            len_values = len(values_in_window)
             print(len(values_in_window))
             distance = calculate_within_group_distance(values_in_window, centers, labels)
-            rank_sum, rank_distance  = calculate_rank_sum(centers, labels)
+            rank_sum, rank_distance, e  = calculate_rank_sum(centers, labels)
             weights = [
                 len([l for l in labels if l == 0]) / len(labels),
                 len([l for l in labels if l == 1]) / len(labels)
@@ -167,39 +182,41 @@ class Analyser:
             label = labels[-1]
             centers.append(float(np.mean(values_in_window)))
             centers.append(centers[labels[-1]])
-            # centers = [centers[0], centers[1], np.mean(values_in_window), centers[labels[-1]]]
             
-            status = 'normal'
-            # 如果距离都比较小而且中心接近
-            if abs(centers[0] - centers[1]) <= 10 and distance[0] < 10 and distance[1] < 10:
-                status = 'normal'
-            # 如果散步，但是时间戳的rank sum比较接近中心
-            elif (
-                distance[0] < 10 and distance[1] < 10 and abs(centers[0] - centers[1]) > 10 and 
-                ( abs(rank_sum[0] - rank_sum[3]) + abs(rank_sum[1] - rank_sum[4]) ) < 1.5
-                ):
-                status = 'turbulence'
-            # 尖峰
-            elif weights[label] < 0.2 and abs(centers[0] - centers[1]) > 20:
-                status = 'sudden_change'
-            # 逐渐上升
-            elif weights[label] > 0.2 and weights[label] < 0.8 and (abs(rank_sum[0] - rank_sum[3]) + abs(rank_sum[1] - rank_sum[4])) <1.5:
-                status = 'gradual_increase'
+            if self.type == 'ICMP':
+                if abs(centers[0] - centers[1]) < 5:
+                    status = 'normal'
+                elif abs(centers[0] - centers[1]) > 10 and weights[label] < 0.2:
+                    status = 'sudden_change'
+                elif abs(centers[0] - centers[1]) > 10 and weights[label] >= 0.2:
+                    status = 'gradual_increase'
+                else:
+                    'unknown'
             else:
-                status = 'unknown' 
-        # 数量不够
+                if abs(centers[0] - centers[1]) < 20:
+                    status = 'normal'
+                elif abs(centers[0] - centers[1]) > 20 and weights[label] < 0.2:
+                    status = 'sudden_change'
+                elif abs(centers[0] - centers[1]) > 20 and weights[label] >= 0.2 and abs(e[label] - e[label + 2]) > len_values * 0.3:
+                    status = 'stage'
+                elif abs(centers[0] - centers[1]) > 20 and weights[label] >= 0.2 and abs(e[label] - e[label + 2]) < len_values * 0.3:
+                    status = 'gradual_increase'
+                else:
+                    status = 'turbulence'
         else:
             status = 'unknown'
-        self.results.append((timestamp, rtt_sample, status, centers, label, weights, distance, rank_sum))
         return {
+            'rtt': rtt_sample,
             'timestamp': timestamp,
-            'value': rtt_sample,
             'status': status,
             'centers': centers,
             'label': label,
             'weights': weights,
             'distance': distance,
-            'rank_sum': rank_sum
+            'rank_sum': rank_sum,
+            'rank_distance': rank_distance,
+            'e': e
+            
         }
 
 
@@ -1422,7 +1439,7 @@ def test():
     print(monitor)
     monitor.print_trees()
 def analyser_test():
-    analyesr = Analyser()
+    analyesr = Analyser(type= 'TCP')
     data = [(28.199, 1669599832.325483), (29.334, 1669599832.327243), (37.837, 1669599832.367833), (27.378, 1669599832.370148), (40.122, 1669599832.370175), (27.74, 1669599832.400521), (34.214, 1669599832.404559), (42.005, 1669599832.409983),
         (27.42, 1669599832.428306), (26.87, 1669599832.832592), (27.782, 1669599832.864788), (28.104, 1669599833.021115), (33.982, 1669599833.449475), (28.179, 1669599833.474618), (28.817, 1669599833.474629), (28.711, 1669599833.503645),
         (29.224, 1669599833.50903), (29.432, 1669599833.50905), (27.861, 1669599833.518924), (27.414, 1669599833.521497), (27.293, 1669599833.531334), (29.573, 1669599833.53364), (27.253, 1669599833.533689), (27.687, 1669599833.537433),
@@ -1436,7 +1453,7 @@ def analyser_test():
         (28.565, 1669599837.221942), (28.41, 1669599852.407904), (31.347, 1669599857.513557), (28.929, 1669599857.542659)]
     key = ('TCP', 'Normal')
     for rtt, timestamp in data:
-        analyesr.add(key, rtt, timestamp)
+        analyesr.add(rtt, timestamp)
     analyesr.__print__()
 if __name__ == "__main__":
     analyser_test()
