@@ -13,3 +13,4 @@ utils/__pycache__/
 .vscode/
 misc/
 docs/
+src/analysis/

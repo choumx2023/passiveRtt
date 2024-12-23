@@ -236,21 +236,22 @@ def calc_listbuffer_weight(l1, timestamp) -> int:
 
 class TcpState():
     def __init__(self) -> None:
-        self.forward_range = [-1, -1]
-        self.backward_range = [-1, -1]
-        self.forward_sack_range = [-1, -1]
-        self.backward_sack_range = [-1, -1]
-        self.time_series = []
-        self.max_length = [-1, -1]
-        self.throught_output = [0, 0]
-        self.valid_throughput = [0, 0]
-        self.init_seq = [-1, -1]
-        self.end_seq = [-1, -1]
-        self.live_span = [-1, -1]
-        self.fin_sign = 0
-        self.packet_count = [0, 0]
+        # 初始化TCP状态
+        self.forward_range = [-1, -1] # forward方向的flight range
+        self.backward_range = [-1, -1] # backward方向的flight range
+        self.forward_sack_range = [-1, -1] # forward方向的sack range
+        self.backward_sack_range = [-1, -1] # backward方向的sack range
+        self.time_series = []   # 时序图
+        self.max_length = [-1, -1] # forward, backward的最大长度
+        self.throught_output = [0, 0] # forward, backward的总吞吐量
+        self.valid_throughput = [0, 0] # forward, backward的有效吞吐量
+        self.init_seq = [-1, -1] # forward, backward的初始序列号
+        self.end_seq = [-1, -1] # forward, backward的结束序列号
+        self.live_span = [-1, -1] # start, end
+        self.fin_sign = 0 # 0: no fin, 1: forward fin, 2: backward fin, 3: both
+        self.packet_count = [0, 0] # forward, backward的包数量
     def clear(self) -> None:
-        self.forward_range = [-1, -1]
+        self.forward_range = [-1, -1] # 
         self.backward_range = [-1, -1]
         self.forward_sack_range = [-1, -1]
         self.backward_sack_range = [-1, -1]
