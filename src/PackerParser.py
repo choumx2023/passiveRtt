@@ -17,6 +17,10 @@ def ip_compare(src_ip, dst_ip):
         return (src_ip, dst_ip)
     else:
         return (dst_ip, src_ip)
+    
+    
+## Todo: 1. 重构代码，将重复代码提取出来，减少代码冗余
+## 2. 改变一下代码结构，timestamp不是很准了需要重新计算
 class NetworkTrafficTable(CuckooHashTable):
     '''
     A table to store network traffic data, including ICMP, DNS, and NTP packets.
@@ -36,15 +40,31 @@ class NetworkTrafficTable(CuckooHashTable):
             monitor (NetworkTrafficMonitor): The monitor instance to record network activities.
             initial_size (int): 哈希表的初始大小。
         '''
-        super().__init__(initial_size, buffersize = 50, type = 'TCP') 
+        super().__init__(initial_size, buffersize = 25) 
         self.rtt_table = RTTTable()
         self.size : int
         self.buffersize : int
         self.tables : list[list[bool, str]]
         self.values : list[list[ListBuffer]]
-        self.tcp_state : list[TcpState]
         self.net_monitor = monitor
-
+    def clear_and_upload(self):
+        '''
+        This function clears the table and uploads the data to the monitor.
+        '''
+        for table_num in range(3):
+            for index in range(self.size):
+                if self.tables[table_num][index] is not None:
+                    self.delete_entry(table_num, index)
+    def delete_entry(self, table_num, index):
+        '''
+        This function deletes the element from the table.
+        and update the monitor record.
+        params:
+            table_num (int): The table number.
+            index (int): The index of the element to delete.
+        '''
+        self.values[table_num][index].clear()
+        self.tables[table_num][index].clear()
     def replace_monitor(self, monitor : NetworkTrafficMonitor):
         '''
         To decrease the complexity of the append function, we update the summary monitor and replace the monitor.
@@ -103,8 +123,6 @@ class NetworkTrafficTable(CuckooHashTable):
         else:
             print("Not ICMP or ICMPv6", value)
             return  # 不是我们感兴趣的包
-        if float(timestamp) > 1714302731.6 and float(timestamp) < 17143025731.9:
-            print("find ICMP! and pass return ,between 1714302731.6 and 17143025731.9",float(timestamp))
         key = {'ip': (src_ip, dst_ip), 'protocol': protocol}
         value = {'timestamp': timestamp, 'type': icmp_type, 'seq': icmp_seq, 'id': icmp_id}
 
@@ -142,7 +160,7 @@ class NetworkTrafficTable(CuckooHashTable):
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
-                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, protocol, 'Response', float(rtt*1000), float(timestamp))
+                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, protocol, 'Response', float(rtt * 1000), float(timestamp), -3)
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, direction=value['direction'], types = protocol)
     
@@ -210,7 +228,7 @@ class NetworkTrafficTable(CuckooHashTable):
 
         timestamp = packet.time
         key = {'ip':(src_ip, dst_ip),'port':(src_port, dst_port), 'protocol': 'DNS'}
-        value = {'timestamp': timestamp, 'dns_id': dns_id, 'is_qr': qr, 'dns_details':[packet[DNS].qdcount, packet[DNS].ancount, packet[DNS].nscount, packet[DNS].arcount]}
+        value = {'timestamp': timestamp, 'dns_id': dns_id, 'is_qr': qr}
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'DNS', 'port': (src_port, dst_port)}
         self.net_monitor.add_ip_and_record_activity(src_ip, 'DNS', 'Request' if qr == 0 else 'Response', 1, float(timestamp))
         self.net_monitor.add_ip_and_record_activity(dst_ip, 'DNS', 'Request' if qr == 0 else 'Response', 1, float(timestamp))
@@ -240,9 +258,9 @@ class NetworkTrafficTable(CuckooHashTable):
                     # find the matching request and calculate RTT
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp          
-                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'DNS', 'Response', float(rtt*1000), float(timestamp))
+                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'DNS', 'Response', float(rtt * 1000), float(timestamp), -2)
                     if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'DNS', direction=value['direction'], extra_data=[value['dns_details'], prior_value['dns_details']])
+                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'DNS', direction=value['direction'])
                         #print(f"RTT: {rtt}")
                     #self.delete(request_key)                    
 
@@ -322,6 +340,11 @@ class TCPTrafficTable(CuckooHashTable):
         self.values : list[list[ListBuffer]]
         self.tcp_state : list[list[TcpState]]
         self.net_monitor = monitor
+    def clear_and_upload(self):
+        for table_num in range(3):
+            for index in range(self.size):
+                if self.tables[table_num][index] is not None:
+                    self.delete_entry(table_num, index)
     def delete_entry(self, table_num, index):
         '''
         This function deletes the element from the table.
@@ -344,14 +367,17 @@ class TCPTrafficTable(CuckooHashTable):
         if TCP in packet:
             tcp_flags = packet[TCP].flags
             syn_flag = (tcp_flags & 0x2) >> 1
-            psh_flag = (tcp_flags & 0x8) >> 3
+            fin_flag = tcp_flags & 0x1
+            rst_flag = (tcp_flags & 0x4) >> 2
+            
             ts_val, _ = self.extract_tcp_options(packet)
             if syn_flag:
                 self.process_syn_packet(packet)
-            elif ts_val is not None:
-                self.process_timestamp_packet(packet)
-            elif psh_flag:
-                self.process_normal_packet(packet, "PSH")
+            
+            # elif ts_val is not None:
+            #     self.process_timestamp_packet(packet)
+            elif  fin_flag or rst_flag:
+                self.process_normal_packet(packet, additional_info = 'RST' if rst_flag else 'FIN')
             else:
                 self.process_normal_packet(packet)
             # 尝试找到匹配的数据包并计算RTT
@@ -365,7 +391,7 @@ class TCPTrafficTable(CuckooHashTable):
             ts_val (int): The timestamp value.
             ts_ecr (int): The timestamp echo reply.
         '''
-        ts_val, ts_ecr = None, None
+        ts_val, ts_ecr = -1, -1
         if TCP in packet:
             for option in packet[TCP].options:
                 if option[0] == 'Timestamp':
@@ -392,7 +418,8 @@ class TCPTrafficTable(CuckooHashTable):
         ack_flag = (tcp_flags & 0x10) != 0
         syn_flag = (tcp_flags & 0x02) != 0
         fin_flag = (tcp_flags & 0x01) != 0
-
+        ts_val, ts_ecr = self.extract_tcp_options(packet)
+        timestamp = packet.time
         # 获取IP头部长度和TCP头部长度
         if ":" in src_ip:
             ip_header_len = 40
@@ -408,12 +435,14 @@ class TCPTrafficTable(CuckooHashTable):
         flags_count = int(syn_flag) + int(fin_flag)
         next_seq = packet[TCP].seq + tcp_payload_len + flags_count
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
-        timestamp = packet.time
-        value = {'timestamp': packet.time, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'SYN':1, 'ACK': ack_flag, 'length': tcp_payload_len, 'next_seq': next_seq}
         
+        value = {'timestamp': packet.time, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack, 'SYN':1, 'ACK': ack_flag, 'length': tcp_payload_len, 'next_seq': next_seq, 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'is_matched': False, 'FIN': fin_flag}
+        # self.net_monitor.record_packet_length(src_ip, value['length'])
+        # self.net_monitor.record_packet_length(dst_ip, value['length'])
         
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         table_num, index = self.lookup(key_temp)
+        # 这里很重要 因为是重置状态
         if syn_flag and not ack_flag and table_num is not None: # 和之前的记录冲突了
             self.delete_entry(table_num, index)
             table_num = None
@@ -430,17 +459,23 @@ class TCPTrafficTable(CuckooHashTable):
             else:
                 value['direction'] = 'backward'
             
-            is_valid, packet_type = self.tcp_state[table_num][index].update_state(value)
+            is_valid, packet_type, ack_length, seq_range = self.tcp_state[table_num][index].update_state(value)
+            value['ack_length'] = ack_length
+            value['seq_range'] = seq_range
+            
             if ack_flag:
                 target_values = self.values[table_num][index]
                 condition1 = lambda existing_item, new_item: existing_item['SYN'] == 1 and existing_item['ACK'] == 0 and existing_item['seq'] == new_item['ack'] - 1 and existing_item['direction'] != new_item['direction']
                 condition2 = lambda existing_item, new_item: False
                 prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
+                self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
                 if prior_value is not None:
                     request_timestamp = prior_value['timestamp']
                     rtt = timestamp - request_timestamp
                     # 更新RTT表
-                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'SYN-ACK', float(rtt*1000), float(timestamp))
+                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'SYN-ACK', float(rtt * 1000), float(timestamp), value['length'])
+
                     if self.rtt_table:
                         self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'SYN', direction=value['direction'])
             # SYN
@@ -449,89 +484,91 @@ class TCPTrafficTable(CuckooHashTable):
                 condition1 = lambda x, y: False
                 condition2 = lambda x, y: True
                 target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
-        self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
-        self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
+                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
+                self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK' if ack_flag else 'SYN', 1, float(timestamp))
         
     # 处理Timestamp数据包
-    def process_timestamp_packet(self, packet : TCP):
-        '''
-        This function processes Timestamp packets, tries to match requests and responses, and then updates the RTT table.
-        params:
-            packet (TCP): The TCP packet to process.
-        returns:
-            None
-        function:
-            for RttTable:
-                add_rtt_sample
-            for NetworkTrafficMonitor:
-                add_ip_and_record_activity
-        '''
-        src_ip, dst_ip = extract_ip(packet)
-        tcp_flags = packet[TCP].flags
-        ack_flag = (tcp_flags & 0x10) != 0
-        syn_flag = (tcp_flags & 0x02) != 0
-        fin_flag = (tcp_flags & 0x01) != 0
-        if ":" in src_ip:
-            ip_header_len = 40
-        else:
-            ip_header_len = packet[IP].ihl * 4
-        tcp_header_len = packet[TCP].dataofs * 4
-        if ":" in src_ip:
-            ip_total_length = packet[IPv6].plen
-        else:
-            ip_total_length = packet[IP].len  # IP总长度包括IP头和TCP段
-        tcp_payload_len = ip_total_length - ip_header_len - tcp_header_len  # TCP负载长度
+    # 该换到另一个类中
+    
+    # def process_timestamp_packet(self, packet : TCP):
+    #     '''
+    #     This function processes Timestamp packets, tries to match requests and responses, and then updates the RTT table.
+    #     params:
+    #         packet (TCP): The TCP packet to process.
+    #     returns:
+    #         None
+    #     function:
+    #         for RttTable:
+    #             add_rtt_sample
+    #         for NetworkTrafficMonitor:
+    #             add_ip_and_record_activity
+    #     '''
+    #     src_ip, dst_ip = extract_ip(packet)
+    #     tcp_flags = packet[TCP].flags
+    #     ack_flag = (tcp_flags & 0x10) != 0
+    #     syn_flag = (tcp_flags & 0x02) != 0
+    #     fin_flag = (tcp_flags & 0x01) != 0
+    #     if ":" in src_ip:
+    #         ip_header_len = 40
+    #     else:
+    #         ip_header_len = packet[IP].ihl * 4
+    #     tcp_header_len = packet[TCP].dataofs * 4
+    #     if ":" in src_ip:
+    #         ip_total_length = packet[IPv6].plen
+    #     else:
+    #         ip_total_length = packet[IP].len  # IP总长度包括IP头和TCP段
+    #     tcp_payload_len = ip_total_length - ip_header_len - tcp_header_len  # TCP负载长度
 
-        # 序列号计算，包括SYN和FIN标志的影响
-        flags_count = int(syn_flag) + int(fin_flag)
-        next_seq = packet[TCP].seq + tcp_payload_len + flags_count
-        # 序列号计算
-        key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
-        ts_val, ts_ecr = self.extract_tcp_options(packet)
-        timestamp = packet.time
-        value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag)}
-        key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
-        self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Timestamp', 1, float(timestamp))
-        self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Timestamp', 1, float(timestamp))
-        table_num, index = self.lookup(key_temp)
-        if table_num is None:
-            self.insert(key_temp)
-        table_num, index = self.lookup(key)
-        target_values : ListBuffer
-        if table_num is not None:
+    #     # 序列号计算，包括SYN和FIN标志的影响
+    #     flags_count = int(syn_flag) + int(fin_flag)
+    #     next_seq = packet[TCP].seq + tcp_payload_len + flags_count
+    #     # 序列号计算
+    #     key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+    #     ts_val, ts_ecr = self.extract_tcp_options(packet)
+    #     timestamp = packet.time
+    #     value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': ack_flag , 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag)}
+    #     key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
+    #     self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Timestamp', 1, float(timestamp))
+    #     self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Timestamp', 1, float(timestamp))
+    #     table_num, index = self.lookup(key_temp)
+    #     if table_num is None:
+    #         self.insert(key_temp)
+    #     table_num, index = self.lookup(key)
+    #     target_values : ListBuffer
+    #     if table_num is not None:
             
 
-            index = self.hash_functions(key, table_num)
-            target_key = self.tables[table_num][index][0]
-            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
-                value['direction'] = 'forward'
-            else:
-                value['direction'] = 'backward'
-            self.tcp_state[table_num][index].update_state(value)
-            if fin_flag:
-                self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
-                ip_pair = self.tables[table_num][index][0]['ip']
-                record =  self.tcp_state[table_num][index].get_flow_record()
-                if record['fin_sign'] == 3 and record['max_length'][0] != -1 and record['max_length'][1] != -1:
-                    self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= record)
-            if ack_flag:
-                target_values = self.values[table_num][index]
-                condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
-                condition2 = lambda x, y: False
-                prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
-                if prior_value is not None:
-                    request_timestamp = prior_value['timestamp']
-                    rtt = timestamp - request_timestamp
-                    # 更新RTT表
-                    self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Timestamp', float(rtt*1000), float(timestamp))
-                    if self.rtt_table:
-                        self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'Timestamp', direction=value['direction'])
-            else:   
-                target_values = self.values[table_num][index]
-                condition1 = lambda x, y: False
-                condition2 = lambda x, y: True
-                target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
-    def process_reset_packet(self, packet : TCP, additional_info :str = None):
+    #         index = self.hash_functions(key, table_num)
+    #         target_key = self.tables[table_num][index][0]
+    #         if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
+    #             value['direction'] = 'forward'
+    #         else:
+    #             value['direction'] = 'backward'
+    #         self.tcp_state[table_num][index].update_state(value)
+    #         if fin_flag:
+    #             self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
+    #             ip_pair = self.tables[table_num][index][0]['ip']
+    #             record =  self.tcp_state[table_num][index].get_flow_record()
+    #             if record['fin_sign'] == 3 and record['max_length'][0] != -1 and record['max_length'][1] != -1:
+    #                 self.net_monitor.add_flow_record(ip_pairs=ip_pair, flow_record= record)
+    #         if ack_flag:
+    #             target_values = self.values[table_num][index]
+    #             condition1 = lambda existing_item, new_item: existing_item.get('ts_val') is not None and existing_item['ts_val'] == new_item['ts_ecr'] and existing_item['direction'] != new_item['direction']
+    #             condition2 = lambda x, y: False
+    #             prior_value = target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+    #             if prior_value is not None:
+    #                 request_timestamp = prior_value['timestamp']
+    #                 rtt = timestamp - request_timestamp
+    #                 # 更新RTT表
+    #                 self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Timestamp', float(rtt * 1000), float(timestamp), value['length'])
+    #                 if self.rtt_table:
+    #                     self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'Timestamp', direction=value['direction'])
+    #         else:   
+    #             target_values = self.values[table_num][index]
+    #             condition1 = lambda x, y: False
+    #             condition2 = lambda x, y: True
+    #             target_values.process_tcp_element(new_element = value, condition1 = condition1, condition2 = condition2, is_add = True)
+    def _1process_reset_packet(self, packet : TCP, additional_info :str = None):
         '''
         This function is used to process the reset packet.
         params:
@@ -560,7 +597,7 @@ class TCPTrafficTable(CuckooHashTable):
         else:
             ip_total_length = packet[IP].len  # IP总长度包括IP头和TCP段
         tcp_payload_len = ip_total_length - ip_header_len - tcp_header_len  # TCP负载长度
-
+        ts_val, ts_ecr = self.extract_tcp_options(packet)
         # 序列号计算，包括SYN和FIN标志的影响
         flags_count = int(syn_flag) + int(fin_flag)
         next_seq = packet[TCP].seq + tcp_payload_len + flags_count
@@ -572,11 +609,8 @@ class TCPTrafficTable(CuckooHashTable):
         timestamp = packet.time
 
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
-                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq}
+                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag), 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'is_matched': False}
         
-        if additional_info == 'PSH':
-            PSH_flag = 1
-            value['PSH'] = PSH_flag
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         table_num, index = self.lookup(key_temp)
         if table_num is None:
@@ -603,10 +637,11 @@ class TCPTrafficTable(CuckooHashTable):
                     if self.rtt_table:
                         if not b2b_flag:
                             self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'RST', direction=value['direction'])
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'RST', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'RST', float(rtt * 1000), float(timestamp), value['length'])
+                            
                         else:
                             self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, 'Normal', direction=value['direction'])
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt*1000), float(timestamp))
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt * 1000), float(timestamp), value['length'])
             else:   
                 target_values = self.values[table_num][index]
                 condition1 = lambda x, y: False
@@ -615,7 +650,7 @@ class TCPTrafficTable(CuckooHashTable):
     
                 
     # 处理普通数据包
-    def process_normal_packet(self, packet : TCP, additional_info=None):
+    def process_normal_packet(self, packet : TCP, additional_info=None, time = [0.004, 0.004]):
         '''
         This function is used to process the normal TCP packet.
         params:
@@ -653,11 +688,15 @@ class TCPTrafficTable(CuckooHashTable):
         next_seq = packet[TCP].seq + tcp_payload_len + flags_count
         key = {'ip': (src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         timestamp = packet.time
+        ts_val, ts_ecr = self.extract_tcp_options(packet)
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
-                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag)}
-        if additional_info == 'PSH':
-            PSH_flag = 1
-            value['PSH'] = PSH_flag
+                'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq, 'FIN': int(fin_flag), 'ts_val': ts_val, 'ts_ecr': ts_ecr, 'is_matched': False}
+        # self.net_monitor.record_packet_length(src_ip, value['length'])
+        # self.net_monitor.record_packet_length(dst_ip, value['length'])
+        if additional_info == 'RST':
+            value['RST'] = 1
+        if additional_info == 'FIN':
+            value['FIN'] = 1
         key_temp = {'ip': ip_compare(src_ip, dst_ip), 'protocol': 'TCP', 'port': (packet[TCP].sport, packet[TCP].dport)}
         
 
@@ -670,50 +709,84 @@ class TCPTrafficTable(CuckooHashTable):
         if table_num is not None:
             if fin_flag:
                 self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'FIN', 1, float(timestamp))
-            
+                self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'FIN', 1, float(timestamp))
             index = self.hash_functions(key, table_num)
             target_key = self.tables[table_num][index][0]
             if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
                 value['direction'] = 'forward'
             else:
                 value['direction'] = 'backward'
-            is_valid, packet_type = self.tcp_state[table_num][index].update_state(value)
+            is_valid, packet_type, ack_length, seq_range = self.tcp_state[table_num][index].update_state(value)
+            value['ack_length'] = ack_length
+            value['seq_range'] = seq_range
             self.tcp_state : list[list[TcpState]]
+            value['us'] = packet_type
             if not is_valid:
+                if fin_flag:
+                    return
+                if packet_type == 'Retransmission':
+                    # 增加一个重传的标志，以后的报文即使匹配到了也不生成RTT
+                    value['Retransmission'] = 1
+                    target_values = self.values[table_num][index]
+                    target_values.process_normal_tcp_element(new_element = value, is_add = False, mtu= self.tcp_state[table_num][index].max_length)
+                    
+                    self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Retransmission', 1, float(timestamp))
+                    self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Retransmission', 1, float(timestamp))
+                else:
+                    self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Normal', 1, float(timestamp))
+                    self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Normal', 1, float(timestamp))
                 return
             else:
                 if ack_flag:
+                    print('*-*-*-*-*-*',value)
                     target_values = self.values[table_num][index]
+                    print(target_values )
                     prior_value, res = target_values.process_normal_tcp_element(new_element=value, is_add=True, mtu= self.tcp_state[table_num][index].max_length)
+                    print('.....', prior_value, res)
+                    
+                    if res == 'Back-to-Back' and (ack_length <= 1448 and prior_value['length'] <= 1448):
+                        res = 'Normal'
                     if prior_value is not None:
                         request_timestamp = prior_value['timestamp']
                         rtt = timestamp - request_timestamp
-                        if prior_value['SYN'] == 1:
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'SYN-ACK', float(rtt*1000), float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'SYN-ACK', 1, float(timestamp))
-                        elif res == 'PSH':
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'PSH', float(rtt*1000), float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'PSH', 1, float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'PSH', 1, float(timestamp))
+                        # 检查是否存在 SYN, RST, 或 FIN 标志被设为1
+                        if prior_value.get('SYN', 0) == 1  or prior_value.get('FIN', 0) == 1:
+                            # 根据存在的标志确定 marker
+                            if prior_value.get('SYN', 0) == 1:
+                                marker = 'SYN-ACK'
+                            else:
+                                marker = 'FIN'
+
+                            # 使用获取的 marker 更新网络监控数据
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', marker, float(rtt * 1000), float(timestamp), value['length'])
+                            #self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', marker, 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', marker, 1, float(timestamp))
                         elif res == 'Back-to-Back':
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Back-to-Back', float(rtt*1000), float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Back-to-Back', 1, float(timestamp))
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Back-to-Back', float(rtt * 1000), float(timestamp), value['length'])
+                            #self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Back-to-Back', 1, float(timestamp))
                             self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Back-to-Back', 1, float(timestamp))
-                            
+                        elif res == 'Heartbeat':
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Heartbeat', float(rtt * 1000), float(timestamp), value['length'])
+                            #self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Heartbeat', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Heartbeat', 1, float(timestamp)) 
+                        elif res == 'BIG-PACKET':
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'BIG-PACKET', float(rtt * 1000), float(timestamp), value['length'])
+                            #self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'BIG-PACKET', 1, float(timestamp))
+                            self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'BIG-PACKET', 1, float(timestamp))
                         else:
-                            return
-                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt*1000), float(timestamp))
-                            self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Normal', 1, float(timestamp))
+                            self.net_monitor.add_or_update_ip_with_rtt(src_ip, 'TCP', 'Normal', float(rtt * 1000), float(timestamp), value['length'])
+                            #self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Normal', 1, float(timestamp))
                             self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Normal', 1, float(timestamp))
                         # 更新RTT表
-                        if self.rtt_table:
-                                self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, res, direction=value['direction'])
+                        # if self.rtt_table:
+                        #         self.rtt_table.add_rtt_sample(src_ip, dst_ip, float(rtt), timestamp, res, direction=value['direction'])
                 else:
                     target_values = self.values[table_num][index]
                     condition1 = lambda x, y: False
                     condition2 = lambda x, y: True
                     target_values.process_element(new_element=value, condition1=condition1, condition2=condition2, is_add=True)
+                    self.net_monitor.add_ip_and_record_activity(src_ip, 'TCP', 'Normal', 1, float(timestamp))
+                    self.net_monitor.add_ip_and_record_activity(dst_ip, 'TCP', 'Normal', 1, float(timestamp))
     def calculate_rtt(self, value, prior_value):
         weight = 0
         if 'ts_val' in value and 'ts_val' in prior_value:

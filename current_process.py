@@ -3,9 +3,9 @@ import time
 import os
 import sys
 import pickle
-from scapy.all import rdpcap
+from scapy.all import *
 from src.PackerParser import NetworkTrafficTable, TCPTrafficTable
-from scapy.all import TCP, ICMP, DNS, NTP
+from scapy.all import TCP, ICMP, DNS, NTP, IP, UDP
 from scapy.layers.inet6 import IPv6, ICMPv6EchoRequest, ICMPv6EchoReply
 from src.Monitor import NetworkTrafficMonitor, CompressedIPNode, CompressedIPTrie
 import logging
@@ -66,7 +66,11 @@ def merge_monitors(file_list, output_dir):
 
     # 递归继续合并
     return merge_monitors(new_file_list, output_dir)
+def handle_packet(packet):
+    global count
+
 def main(pcap_file, output_dir):
+    print('Processing pcap file:', pcap_file)
     pcap_name = pcap_file.split('/')[-1].split('.')[0]
     output_dir = os.path.join(output_dir,  pcap_name)
     os.makedirs(output_dir, exist_ok=True)
@@ -80,16 +84,35 @@ def main(pcap_file, output_dir):
     time1 = time.time()
     part_number = 0
     for packet in packets:
-        
         count += 1
-        if ICMP in packet:
-            icmp_table.add_packet(packet)
-        elif IPv6 in packet and (ICMPv6EchoReply in packet or ICMPv6EchoRequest in packet):
-            icmp_table.add_packet(packet)
-        elif DNS in packet or NTP in packet:
-            traffic_table.add_packet(packet)
-        elif TCP in packet:
-            tcp_table.add_packet(packet)
+        print(count)
+
+        # 确保数据包是IP数据包，并且访问协议字段
+        if IP in packet:
+            ip_layer = packet[IP]
+            
+            # ICMP协议编号为1
+            if ip_layer.proto == 1:
+                icmp_table.add_packet(packet)
+
+            # TCP协议编号为6
+            elif ip_layer.proto == 6:
+                tcp_table.add_packet(packet)
+
+            # UDP协议编号为17
+            elif ip_layer.proto == 17:
+                # 进一步检查是否包含DNS或NTP
+                if UDP in packet and (DNS in packet or NTP in packet):
+                    traffic_table.add_packet(packet)
+            
+            # 可以继续添加更多的协议编号检查
+            # 例如ICMPv6的协议编号为58
+            # ...
+
+        # 其他特殊处理，例如IPv6特定的情况
+        elif IPv6 in packet:
+            if ICMPv6EchoReply in packet or ICMPv6EchoRequest in packet:
+                icmp_table.add_packet(packet)
 
         # every 10000 packets, print the number of packets processed and the time spent
         if count % 10000 == 0:
@@ -98,14 +121,14 @@ def main(pcap_file, output_dir):
             print(f'Processed {count} packets, time: {time2 - time1}s')
             time1 = time2
         # every 100000 packets, save the current monitor and create a new one
-        if count % 100000 == 0:
+        if count % 2000000 == 0:
             part_number += 1
             # merge the current monitor into the summary monitor
             time3 = time.time()
             # create a new monitor for the next batch of packets
-            traffic_table.flush_tables()
-            tcp_table.flush_tables()
-            icmp_table.flush_tables()
+            traffic_table.clear_and_upload()
+            tcp_table.clear_and_upload()
+            icmp_table.clear_and_upload()
             save_data_with_pickle(monitor, os.path.join(output_dir, f'current_monitor_{part_number}.pkl'))
             monitor = NetworkTrafficMonitor(name='current', check_anomalies=True, logger=logger)
             
@@ -115,7 +138,7 @@ def main(pcap_file, output_dir):
             time4 = time.time()
             time1 = time4
     # save the last part of the monitor
-    if count % 100000 != 0:
+    if count % 2000000 != 0:
         part_number += 1
         traffic_table.flush_tables()
         icmp_table.flush_tables()

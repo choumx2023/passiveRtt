@@ -72,7 +72,11 @@ class ListBuffer:
                 self.buffer.pop(i)  # 移除满足条件1的元素
                 self.count -= 1
             i -= 1
-
+        i = i - 1
+        while i >= 0:
+            self.buffer.pop(i)
+            self.count -= 1
+            i -= 1
         if is_add:
             self.add(copy.deepcopy(new_element))  # 如果is_add为真，则添加新元素
             #print('add new element', new_element)
@@ -125,7 +129,7 @@ class ListBuffer:
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
     # 3. S->C: seq = y, ack = x+50
-    def process_normal_tcp_element(self, new_element : dict ,is_add : bool, mtu : list = [1000, 1000]) -> typing.Union[list, bool]:
+    def process_normal_tcp_element(self, new_element : dict ,is_add : bool, mtu : list = [1000, 1000] , gap_time = 0.004) -> typing.Union[list, bool]:
         '''
         This function processes a new element in the buffer and returns the first matched element, aiming to detect normal/back-to-back TCP packets 
         
@@ -135,63 +139,119 @@ class ListBuffer:
         return:
             first_matched_value: the first matched value in the buffer
         '''
+        if 'Retransmission' in new_element:
+            self.add(copy.deepcopy(new_element))
+            return 
         self.tcp_state : dict
+        RETRANS_flag = False
         first_match_value = None
         new_ack = new_element['ack']
         # 假设背靠背的TCP包全部是相同的ACK
-        old_ack = -1
+        current_seq = -1
         i = len(self.buffer) - 1
         count = 0
         PSH_flag = False
-        GAP_flag = True
+        GAP_flag = False
+        is_match = False
+        big_packet_flag = False
+        match_retransmission = False
+        ack_len = new_element['ack_length']
+        temp_rtt = -1
+        # 如果这个重传包没有ts_val，直接返回
+        if 'Retransmission' in new_element and new_element['ts_val'] == -1:
+            return None, None
         while i >= 0:
             current_element = self.buffer[i]# 考虑之前的包
-            maxium_length = -1
+            print(current_element)
+                # 额外的时间戳检查条件
             if new_element['direction'] != current_element['direction']: # 不同方向
-                if current_element['ack'] < new_element['seq']:# 过早的数据包
+                print('=====entered====')
+                tsval_match = (current_element.get('ts_val', 0) == new_element.get('ts_ecr', 0))
+                if tsval_match:
+                    is_match = True
+                if not is_match:
+                    i -= 1
+                    continue
+                if current_element['seq'] > new_element['ack']:
+                    i -= 1
+                    continue
+                if current_element['ack'] + (current_element['FIN'] == 1) < new_element['seq_range']:# 过早的数据包
                     self.buffer.pop(i)# 过期的不留
                     self.count -= 1
-                elif current_element['ack'] == new_element['seq'] and current_element['seq'] <= new_element['ack'] :
-                    if 'PSH' in current_element and current_element['PSH'] == 1:
-                        PSH_flag = True
+                    i -= 1
+                    continue
+                if current_element['length'] == 0 and (current_element['FIN'] == 0 and current_element['SYN'] == 0):
+                    self.buffer.pop(i)
+                    self.count -= 1
+                    i -= 1
+                    continue
+                elif current_element['FIN'] == 1:
+                    if current_element['seq'] == new_element['ack'] - 1:
+                        first_match_value = copy.deepcopy(current_element)
+                        self.buffer.pop(i)
+                        self.count -= 1
+                        break
+                        
+                elif current_element['ack']  >= new_element['seq_range'] and current_element['ack']  <= new_element['seq']:
+                    if 'Retransmission' in new_element:
+                        RETRANS_flag = True
+                        return None, None
                     # 如果是第一个匹配的包
                     if first_match_value is None:
                         if current_element['next_seq'] == new_element['ack']:
                             GAP_flag = False
                         first_match_value = copy.deepcopy(current_element)
                         # 如果第一个匹配的包是合并了多个包的包，直接定义为背靠背
-                        if current_element['length'] >= mtu[new_element['direction'] == 'forward'] * 2 and current_element['length'] > 1400 * 2:
-                            return first_match_value, "Back-to-Back"
+                        current_element['is_matched'] = True
                         count += 1
-                    else:# 验证是不是有两个及以上的包
-                        # 如果不止发送了一个packet，要保留两个
-                        if (
-                            abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] >= mtu[new_element['direction'] == 'forward'] and current_element['length'] > 1000
-                        ):    
-                            maxium_length = current_element['length']
-                            count += 1
+                        tmep_rtt = new_element['timestamp'] - current_element['timestamp']
+                        current_seq = first_match_value['seq']
+                        if current_element['length'] >= 1400:
+                            big_packet_flag = True
+                        ack_len -= current_element['length']
+                        if ack_len >= 0:
                             self.buffer.pop(i)
                             self.count -= 1
-                        # 如果连续发送不少于三个，删掉前n-2个
+                    else:# 验证是不是有两个及以上的包
+                        # 如果匹配上
+                        if (
+                            #abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] > 1000
+                            #abs(first_match_value['timestamp'] - current_element['timestamp']) < min(max(temp_rtt * 0.05, 1e-3), 0.02) and 
+                            ack_len > 0 and current_element['length'] > 0 and current_element['seq'] + current_element['length'] == current_seq
+                        ):    
+                            count += 1
+                            ack_len -= current_element['length']
+                            current_seq = current_element['seq']
+                            self.buffer.pop(i)
+                            self.count -= 1
+                            if current_element['length'] >= 1400:
+                                big_packet_flag = True
+                        # 如果超时了，或者有间隔
                         else :
                             self.buffer.pop(i)
                             self.count -= 1
+                
             if new_element['direction'] == current_element['direction']:#相同方向
-                if current_element['ack'] == new_ack:
-                    count = 0
+                if new_element['ack'] <= current_element['ack'] :
                     break
             i -= 1
+        # 如果是可以添加的包，添加
         if is_add:
             self.add(copy.deepcopy(new_element))
-        if first_match_value is None or new_element['timestamp'] - first_match_value['timestamp'] > 1 - 1e-3:
+        if RETRANS_flag:
             return None, None
-        if not PSH_flag:# 没有psh。也没有back-to-back
+        # 如果没有找到匹配的包或者延迟太大，返回None
+        if first_match_value is None:# and ( new_element['timestamp'] - first_match_value['timestamp'] > 1 - 1e-3 or 1):
             return None, None
         res = "Back-to-Back"
-        if count < 2 and PSH_flag:
-            res = "PSH"
+        # 如果存在GAP，返回GAP
         if GAP_flag:
             res = "GAP"
+        elif count < 2:
+            if big_packet_flag and first_match_value['is_matched'] == False:
+                res = "BIG-PACKET"
+            else:
+                res = "Normal"  
         return first_match_value, res
     def clear(self) -> None:
         '''
@@ -207,7 +267,6 @@ class ListBuffer:
         return f"ListBuffer(size={self.size}, buffer={self.buffer})"
     def __repr__(self) -> str:
         return self.__str__()
-    
     
 
 def random_compare_listbuffer(l1 : ListBuffer | dict, l2 : ListBuffer) -> bool:
@@ -237,20 +296,8 @@ def calc_listbuffer_weight(l1, timestamp) -> int:
 class TcpState():
     def __init__(self) -> None:
         # 初始化TCP状态
-        self.forward_range = [-1, -1] # forward方向的flight range
-        self.backward_range = [-1, -1] # backward方向的flight range
-        self.forward_sack_range = [-1, -1] # forward方向的sack range
-        self.backward_sack_range = [-1, -1] # backward方向的sack range
-        self.time_series = []   # 时序图
-        self.max_length = [-1, -1] # forward, backward的最大长度
-        self.throught_output = [0, 0] # forward, backward的总吞吐量
-        self.valid_throughput = [0, 0] # forward, backward的有效吞吐量
-        self.init_seq = [-1, -1] # forward, backward的初始序列号
-        self.end_seq = [-1, -1] # forward, backward的结束序列号
-        self.live_span = [-1, -1] # start, end
-        self.fin_sign = 0 # 0: no fin, 1: forward fin, 2: backward fin, 3: both
-        self.packet_count = [0, 0] # forward, backward的包数量
-    def clear(self) -> None:
+        self._reset_state()
+    def _reset_state(self) -> None:
         self.forward_range = [-1, -1] # 
         self.backward_range = [-1, -1]
         self.forward_sack_range = [-1, -1]
@@ -267,7 +314,86 @@ class TcpState():
         # 这里应该加一个更新的操作
         # live_span, throught output  ip地址，端口号
         # return live_span, throught_output, valid_throughput
-    def update_state(self, value : dict) -> None:
+    def clear(self) -> None:
+        self._reset_state()
+    def update_state(self, value: dict) -> None:
+        '''
+        Updates the internal state of the TCP connection based on the provided packet details.
+
+        Arguments:
+        value (dict): Dictionary containing details about the TCP packet.
+        '''
+
+        # 识别方向
+        direction_idx = 0 if value['direction'] == 'forward' else 1
+        opp_direction_idx = 1 - direction_idx
+
+        # 更新吞吐量，包计数和活动时间
+        self.throught_output[direction_idx] += value['length']
+        self.packet_count[direction_idx] += 1
+        current_timestamp = value['timestamp']
+        if self.live_span[0] == -1:
+            self.live_span[0] = current_timestamp
+        self.live_span[1] = max(self.live_span[1], current_timestamp)
+
+        # Update max length
+        self.max_length[direction_idx] = max(self.max_length[direction_idx], min(value['length'], 1448))
+
+        # Update sequence numbers
+        if self.init_seq[direction_idx] == -1:
+            self.init_seq[direction_idx] = value['seq']
+        self.end_seq[direction_idx] = max(self.end_seq[direction_idx], value['next_seq'])
+
+        # Update forward and backward ranges
+        next_seq = value['next_seq']
+        ack_length = 0
+        ack = value['ack']
+        update_forward = next_seq > self.forward_range[direction_idx]
+        update_backward = ack > self.backward_range[opp_direction_idx]
+        print('-------------------')
+        print(value)
+        print(self.forward_range, self.backward_range)
+        
+        Heartbeat = False
+        if next_seq == self.forward_range[direction_idx] - 1:
+            Heartbeat = True
+        if update_forward:
+            self.forward_range[direction_idx] = next_seq
+            self.valid_throughput[direction_idx] += value['length']
+
+        if update_backward:
+            ack_length = ack - self.backward_range[opp_direction_idx]
+            self.backward_range[opp_direction_idx] = ack
+            
+        print('****',self.forward_range, self.backward_range)
+        # Determine packet type and validity
+        is_valid, packet_type = self._classify_packet(value, update_forward, update_backward, is_heartbeat=Heartbeat)
+        seq_range = self.backward_range[direction_idx]
+        return is_valid, packet_type, ack_length, seq_range
+
+    def _classify_packet(self, value, update_forward, update_backward, is_heartbeat=False):
+        '''
+        Classifies the type of the packet based on TCP flags and updates.
+        '''
+        if value.get('RST', False):
+            return False, 'Reset'
+        if value.get('SYN', False) and value.get('ACK', False):
+            return True, 'SYN-ACK'
+        if value.get('SYN', False):
+            return True, 'SYN'
+        if value.get('FIN', False):
+            return True, 'FIN'
+        if value['length'] > 0 and not update_backward and not update_forward:
+            return False, 'Retransmission'
+        if value['length'] == 0:
+            if is_heartbeat:
+                return True, 'Heartbeat'
+            elif update_backward:
+                return True, 'Pure ACK'
+            else:
+                return False, 'Duplicate ACK'
+        return True, 'Normal'
+    def __update_state(self, value : dict) -> None:
         '''
         value = {
             'timestamp': packet.time,
@@ -287,25 +413,21 @@ class TcpState():
             type: a string indicating the type of the packet
         '''
         judge = 0
-
         is_valid, packet_type = True, None
         # 更新live_span, throught_output, max_length
         if value['direction'] == 'forward':
-            if 'FIN' in value and value['FIN']:
-                self.fin_sign |=1
             self.max_length[0] = max(self.max_length[0], min(value['length'], 1448))
             self.throught_output[0] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
         else:
-            if 'FIN' in value and value['FIN']:
-                self.fin_sign |= 2
             self.max_length[1] = max(self.max_length[1], min(value['length'],1448))
             self.throught_output[1] += max(value['length'], 0)
             if self.live_span[0] == -1:
                 self.live_span[0] = value['timestamp']
             self.live_span[1] = max(self.live_span[1], value['timestamp'])
+            
         # 更新forward_range, backward_range, valid_throughput
         if value['direction'] == 'forward':
             self.packet_count[0] += 1
@@ -373,6 +495,7 @@ class TcpState():
             else:
                 packet_type = 'Normal'
         return is_valid, packet_type
+    
     def get_flow_record(self) -> dict:
         '''
         This function returns the flow record of the TCP connection
@@ -674,7 +797,6 @@ class CuckooHashTable():
         for table_id in range(3):
             for i in range(self.size):
                 if self.tables[table_id][i] is not None:
-                    
                     self.values[table_id][i].clear()
                     self.tcp_state[table_id][i].clear()
                     

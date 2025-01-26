@@ -26,6 +26,21 @@ from datetime import datetime, timedelta
 import numpy as np
 import math
 
+
+def merge_dictionaries(*dicts):
+    """
+    合并多个字典，将相同键的值累加。
+
+    参数:
+        *dicts: 任意数量的字典
+
+    返回:
+        dict: 合并后的字典，键值累加
+    """
+    merged = Counter()
+    for d in dicts:
+        merged.update(d)  # 使用 Counter 自动累加
+    return dict(merged)  # 返回普通字典
 ## 00成功 01失败
 class WelfordVariance:
     def __init__(self, time_window: int = 1200, max_count: int = 1200, initial_limit: int = 6):
@@ -120,6 +135,9 @@ def default_rtt_state():
         'count': {},
         'rtt_values': []
     }
+def default_int_dict():
+    return defaultdict(int)
+
 class CompressedIPNode:
     '''
     This class represents a node in a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
@@ -159,7 +177,6 @@ class CompressedIPNode:
         self.contain_ip_number = 0
         self.contain_rtt_ip_number = 0
         self.stats = defaultdict(default_state)
-        
         # 以下是对延迟估计的统计数据
         packet_type = []
         self.rtt_estimation = {packet: Analyser(type=packet) for packet in packet_type}
@@ -200,6 +217,67 @@ class CompressedIPNode:
         
         # 以下记录流量记录
         self.flows_record = [] # live_span, ports, throughput, valid_throughput
+        self.packet_len = {}    
+        self.packet_len_stats = defaultdict(default_int_dict)
+    def add_packet(self, key, length):
+        """
+        添加数据包长度
+        参数:
+            key: 数据包的标识
+            length (int): 数据包的长度
+        返回:
+            None
+        """
+        self.packet_len_stats[key][length] += 1
+    def print_packet_len_cdf(self, exclude_zero=False, max_length=2800):
+        """
+        计算并打印数据包长度的 CDF，同时绘制 CDF 图，并显示总数信息。
+        参数:
+            exclude_zero (bool): 是否排除 key=0 的数据，默认为 False。
+            max_length (int): 超过此长度的值将归为 max_length，默认 2800。
+        返回:
+            None
+        """
+        if not self.packet_len:
+            print("No packet length data to display.")
+            return
+
+        # 过滤数据（排除 key=0 的条目）
+        if exclude_zero:
+            packet_len = {k: v for k, v in self.packet_len.items() if k > 0}
+        else:
+            packet_len = self.packet_len
+
+        if not packet_len:
+            print("No data available after filtering.")
+            return
+
+        # 将长度超过 max_length 的归为 max_length
+        packet_len_normalized = {}
+        for length, count in packet_len.items():
+            normalized_length = min(length, max_length)  # 长度不超过 max_length
+            packet_len_normalized[normalized_length] = packet_len_normalized.get(normalized_length, 0) + count
+
+        # 排序数据包长度，计算总数
+        packet_len = sorted(packet_len_normalized.items(), key=lambda x: x[0])
+        total = sum(count for _, count in packet_len)  # 计算 value 的总和
+
+        # 计算累积频率
+        count = 0
+        lengths = []
+        cdf_values = []
+        for length, c in packet_len:
+            count += c
+            lengths.append(length)
+            cdf_values.append(count / total)
+
+        # 添加标题和轴标签
+        plt.plot(lengths, cdf_values, label=f'{self.network} - {total} packets')
+        plt.title("CDF of Packet Lengths", fontsize=14)
+        plt.xlabel("Packet Length", fontsize=12)
+        plt.ylabel("CDF", fontsize=12)
+        plt.grid(True)
+        plt.legend()
     def aggregate_stats(self):
         '''
         聚合来自所有子节点的stats数据。
@@ -245,7 +323,7 @@ class CompressedIPNode:
                     aggregated_rtt[key].extend(values)
         self.rtt_records = aggregated_rtt
 
-    def record_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float,  check_anomalies=False):
+    def record_rtt(self, protocol : str, pattern : str, rtt : float, timestamp : float, length, check_anomalies=False):
         '''
         适合最小的ip地址
         params:
@@ -284,6 +362,7 @@ class CompressedIPNode:
                 self.rtt_WelfordVariance.update(rtt, timestamp)
             self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
+            self.add_packet(key, length)
             self.all_rtt_records.append((rtt, timestamp))
             if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
                 if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
@@ -294,8 +373,8 @@ class CompressedIPNode:
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             # 父母就不检查了，向上传递
-            if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
-                self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+            # if self.parent and self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
+            #     self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
         
         # # 如果需要检查异常，则按照不同的协议进行检查
         # current_mean_rtt = welford_variance.get_mean()
@@ -352,13 +431,19 @@ class CompressedIPNode:
                 self.rtt_stats['min_rtt'] = rtt
             if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
                 self.rtt_stats['max_rtt'] = rtt
-        if self.parent:
-            self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-    
+        # if self.parent:
+        #     self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
+    def record_packet_len(self, key, length : int):
+        '''
+        This function records the packet length.
+        params:
+            length: The length of the packet
+        记录数据包长度。
+        '''
+        self.add_packet(key, length)
     def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp = None, check_anomalies=False):
         '''
         This function records activity recursively.
-
         params:
             protocol: 协议
             action: 动作
@@ -378,8 +463,8 @@ class CompressedIPNode:
             self.detect_protocols_anomalie(protocol)
 
         # Decide whether to check for anomalies only once at the initial call
-        if self.parent and self.parent.network.prefixlen >= max_mask:
-            self.parent.record_activity_recursive(protocol, action, count, timestamp, check_anomalies)
+        # if self.parent and self.parent.network.prefixlen >= max_mask:
+        #     self.parent.record_activity_recursive(protocol, action, count, timestamp, check_anomalies)
     def get_contain_ip_number(self):
         '''
         This function calculates the number of IP addresses contained in the network.
@@ -535,7 +620,6 @@ class CompressedIPNode:
         if not check_relevant_anomalous_rtts(relevent_anomalous_rtts, delta):
             return False  # 没有其他相关异常，可能是单个IP的问题
         return True
-
     def __rtt__(self, prefix=''):
         prefix1 = prefix + '  '
         def format_output(rtts):
@@ -705,12 +789,15 @@ class CompressedIPTrie:
             None
         
         '''
+        print('Merging networks...')
         # 合并网络应当考虑可能需要递归上溯到不只是直接父节点
-        step = 2 if self.ip_version == 4 else 4
-        merge_count = 2 if self.ip_version == 4 else 4
-        max_subnet =  8 if self.ip_version == 4 else 32
+        step = 4 if self.ip_version == 4 else 32
+        merge_count = 2 
+        max_subnet =  24 if self.ip_version == 4 else 96
         parent = new_net.parent
-        while parent and new_net.network.prefixlen <= max_subnet:
+        print('Parent:', parent.network)
+        print('New:', new_net.network)
+        while parent and new_net.network.prefixlen >= max_subnet:
             super_net = new_net.network.supernet(new_prefix=new_net.network.prefixlen - step)
             if super_net.prefixlen % step != 0:
                 print('Invalid supernet.')
@@ -720,10 +807,8 @@ class CompressedIPTrie:
             # 检查是否有足够的子节点可以合并
             max_subnet_prefix = super_net.prefixlen - step
             eligible_children = [child for child in parent.children.values() if child.network.subnet_of(super_net)]
-            max_subnet_children = [child for child in parent.children.values() if child.network.subnet_of(super_net) and child.network.prefixlen == max_subnet_children]
+            max_subnet_children = [child for child in parent.children.values() if child.network.subnet_of(super_net)]
             # TODO : 可以根据需要调整合并的条件 首先就是根据子网的rtt数量 这里需要一个聚类方法，参考指标就是各个子网的rtt_stats
-            
-            
             if len(max_subnet_children) >= merge_count:
                 supernet_node = CompressedIPNode(network=super_net, logger=self.logger)
                 parent.children[super_net] = supernet_node
@@ -732,9 +817,9 @@ class CompressedIPTrie:
                     supernet_node.children[child.network] = child
                     child.parent = supernet_node
                     supernet_node.subnets.append(child.network)
-                supernet_node.aggregate_stats()
-                supernet_node.aggregate_rtt()   
-                supernet_node.update_contain_ip_number()
+                # supernet_node.aggregate_stats()
+                # supernet_node.aggregate_rtt()   
+                # supernet_node.update_contain_ip_number()
                 supernet_node.parent = parent
                 parent = supernet_node.parent
                 new_net = supernet_node
@@ -800,10 +885,10 @@ class CompressedIPTrie:
         indent_str = '    ' * indent
         with open(file_path, 'a') as f:
             f.write(f'{node.__basic__(indent_str)}\n')
-            f.write(f"{node.__stats__(indent_str)}\n")
-            f.write(f'{node.__tcpflow__(indent_str)}\n')
+            #f.write(f"{node.__stats__(indent_str)}\n")
+            #f.write(f'{node.__tcpflow__(indent_str)}\n')
             f.write(f"{node.__rtt__(indent_str)}\n")
-            f.write(f'{node.__anormalies__(indent_str)}\n')
+            #f.write(f'{node.__anormalies__(indent_str)}\n')
         for child in node.children.values():
             self.print_tree(child, indent + 1, file_path)
     def collect_smallest_subnets(self):
@@ -836,14 +921,20 @@ class CompressedIPTrie:
             # 更新节点的统计数据
             node.contain_ip_number += child.contain_ip_number
             node.contain_rtt_ip_number += child.contain_rtt_ip_number
-            # 如果是较大的网络，不需要累加RTT数据
             if not is_bigger_network:
-                for (protocol, pattern), rtts in child.rtt_records.items():
-                    node.accumulate_rtt_stats[(protocol, pattern)] += len(rtts)
                 for (protocol, action), details in child.stats.items():
-                    node.accumulate_normal_stats[(protocol, action)] += details['count']
-                for (protocol, pattern), rtts in child.anomalous_rtts_records.items():
-                    node.accumulate_rtt_stats[('Anomalous '+protocol, pattern)] += len(rtts)
+                    node.stats[(protocol, action)]['count'] += details['count']
+            dict_list = [copy.deepcopy(ch.packet_len) for ch in node.children.values()]
+            final = merge_dictionaries(*dict_list)            
+            node.packet_len = copy.deepcopy(final)
+            # 如果是较大的网络，不需要累加RTT数据
+            # if not is_bigger_network:
+            #     for (protocol, pattern), rtts in child.rtt_records.items():
+            #         node.accumulate_rtt_stats[(protocol, pattern)] += len(rtts)
+            #     for (protocol, action), details in child.stats.items():
+            #         node.accumulate_normal_stats[(protocol, action)] += details['count']
+            #     for (protocol, pattern), rtts in child.anomalous_rtts_records.items():
+            #         node.accumulate_rtt_stats[('Anomalous '+protocol, pattern)] += len(rtts)
                     
 
     def analyse(self, node):
@@ -960,6 +1051,18 @@ class NetworkTrafficMonitor:
         if node and protocol in node.rtt_records:
             return statistics.mean(node.rtt_records[protocol]) if node.rtt_records[protocol] else None
         return None
+    def record_packet_length(self, ip, packet_length):
+        '''
+        params:
+            ip: IP地址
+            protocol: 协议
+            packet_length: 包长度
+        记录包长度。
+        '''
+        trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
+        node = trie.find_node(ip)
+        if node:
+            node.record_packet_len(packet_length)
     def query_activity(self, ip : IPv4Address | IPv6Address, protocol :str, action :str):
         '''
         params:
@@ -976,7 +1079,7 @@ class NetworkTrafficMonitor:
             timestamps = [item[1] for item in node.stats[key]]  # 获取所有时间戳
             return total_count, timestamps
         return 0, []
-    def add_or_update_ip_with_rtt(self, ip : str, protocol : str, pattern : str, rtt : float, timestamp : float):
+    def add_or_update_ip_with_rtt(self, ip : str, protocol : str, pattern : str, rtt : float, timestamp : float, length = -1):
         '''
         params:
             ip: IP地址
@@ -995,7 +1098,7 @@ class NetworkTrafficMonitor:
         # 现在记录RTT数据，假设节点现在肯定存在
         if node:
             # 如果self.check_anomalies为True，则检查异常
-            node.record_rtt(protocol, pattern, rtt, timestamp, check_anomalies= self.check_anomalies)
+            node.record_rtt(protocol, pattern, rtt, timestamp, length, check_anomalies= self.check_anomalies)
         # 可选：检测异常情况
         if 0:
             node.check_rtt_anomalies()
@@ -1131,7 +1234,10 @@ class NetworkTrafficMonitor:
         return (f'NetworkTrafficMonitor({self.ipv4_trie}, {self.ipv6_trie})')
     def __str__(self) -> str:
         return (f'NetworkTrafficMonitor({self.ipv4_trie}, {self.ipv6_trie})')
-
+    def get_node(self, ip):
+        trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
+        node = trie.find_node(ip)
+        return node
 def generate_single_ip(base_net, prefix):
     '''
     params:
@@ -1177,66 +1283,5 @@ def read_pickle(filename):
     with open (filename, 'rb') as f:
         data = pickle.load(f)
         return data
-def main():
-    logger = setup_logging()
-    monitor = NetworkTrafficMonitor(logger = logger)
-    
-    monitor.add_ip_and_record_activity('192.168.1.200', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.100', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.201', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.101', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.202', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.102', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.203', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.103', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.204', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.104', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.205', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.105', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_or_update_ip_with_rtt('192.168.1.105', 'TCP', 'SYN',  700, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.206', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.106', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.207', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.108', 'TCP', 'Timestamp',  300, time.time()) 
-    monitor.add_ip_and_record_activity('192.168.1.210', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.109', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('192.168.1.230', 'DNS', 'Query', 1, time.time())
-    monitor.add_ip_and_record_activity('192.168.1.230', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.110', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('192.168.1.120', 'TCP', 'forward',1, time.time())
-    monitor.add_or_update_ip_with_rtt('192.168.1.120', 'TCP', 'Timestamp',  300, time.time())
-
-
-
-    monitor.add_ip_and_record_activity('2001:db8::1', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::2', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::3', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::4', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::5', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::6', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::7', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::8', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::9', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::10', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::10', 'TCP', 'SYN',  700, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::11', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::12', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::13', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::14', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::15', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::16', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::17', 'DNS', 'Query', 1, time.time())
-    monitor.add_or_update_ip_with_rtt('2001:db8::18', 'TCP', 'Timestamp',  300, time.time())
-    monitor.add_ip_and_record_activity('2001:db8::19', 'DNS', 'Query', 1, time.time())
-    monitor.add_ip_and_record_activity('2001:db80:0000::20', 'TCP', 'forward', 2, time.time())
-    # monitor.add_record('DNS', 'Query', num = 10, timestamps)
-    # 打印Trie树以查看子网聚合情况
-    monitor.print_trees()
-    monitor.save_state('network_monitor.pkl')
-
-def test():
-    monitor = read_pickle('current_monitor.pkl')
-    print(monitor)
-    monitor.print_trees()
 
 
