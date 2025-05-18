@@ -4,6 +4,8 @@ from collections import deque
 def max_rank_distance(n, count):
     '''
     返回最大的秩距离
+    
+    
     params:
         n: 总的数据点
         count: 聚类的数据点
@@ -481,7 +483,8 @@ class Analyser:
             'timestamp': new_estimation['timestamp'],
             'rtt_estimation': new_estimation['rtt_estimation'],
             'centers': new_estimation['centers'],
-            'con': new_estimation['con']
+            'con': new_estimation['con'],
+            'weights': new_estimation['weights']
         }
         return upstream_data
     def __print__(self):
@@ -523,6 +526,6 @@ def analyser_test():
     for rtt, timestamp in data:
         analyesr.add(rtt, timestamp)
         current = analyesr.get_current_estimation()
-        print(current['rtt'], current['rtt_estimation'], current['con'],current['centers']) 
+        print(current['rtt'], current['rtt_estimation'], current['con'],current['centers'], current['weights']) 
 if __name__ == "__main__":
     analyser_test()

@@ -3,6 +3,9 @@
 *.pkl
 *.png
 *.log
+*.pdf
+*.csv
+
 .venv
 output/
 current/

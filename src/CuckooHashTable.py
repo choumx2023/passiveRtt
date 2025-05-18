@@ -14,21 +14,20 @@ stage_name = ['stage_1', 'stage_2', 'stage_3']
 class ListBuffer:
     '''
     ListBuffer: a class that implements a list-based buffer with a fixed size
-    
     '''
-    def __init__(self, size : int, tcp_state = False) -> None:
+    def __init__(self, size: int, tcp_state: bool = False) -> None:
         '''
         params:
             size (int): The maximum number of elements that the buffer can hold
         '''
-        self.size = size
-        self.buffer = []
-        self.count = 0
+        self.size: int = size
+        self.buffer: list[dict] = []
+        self.count: int = 0
     
     def __state__(self) -> str:
         return f"ListBuffer(size={self.size}, buffer={self.buffer}), count={self.count}"
     
-    def add(self, item : dict) -> None:
+    def add(self, item: dict) -> None:
         '''
         params:
             item: a dictionary containing the item to be added
@@ -43,7 +42,13 @@ class ListBuffer:
         if self.count > self.size:
             self.buffer.pop(0)  # 移除最旧的元素以保持缓冲区大小
             self.count -= 1
-    def process_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
+    def process_element(
+        self,
+        new_element: dict,
+        condition1: Callable[[dict, dict], bool],
+        condition2: Callable[[dict, dict], bool],
+        is_add: bool
+    ) -> dict | None:
         '''
         非TCP的处理函数
         
@@ -58,7 +63,7 @@ class ListBuffer:
             first_matched_value: the first matched value in the buffer
         '''
         
-        first_matched_value = None
+        first_matched_value: dict | None = None
         # 从新到旧遍历缓冲区
         i = len(self.buffer) - 1
         while i >= 0:
@@ -82,9 +87,14 @@ class ListBuffer:
             #print('add new element', new_element)
         if (first_matched_value is None) or (new_element['timestamp'] - first_matched_value['timestamp'] > 1 - 1e-3):
             return None
-        
         return first_matched_value
-    def process_tcp_element(self, new_element: list, condition1 : Callable[[dict, dict], bool], condition2 : Callable[[dict, dict], bool], is_add : bool) -> list:
+    def process_tcp_element(
+        self,
+        new_element: dict,
+        condition1: Callable[[dict, dict], bool],
+        condition2: Callable[[dict, dict], bool],
+        is_add: bool
+    ) -> dict | None:
         '''
         TCP的处理函数 需要增加
         This function processes a new element in the buffer and returns the first matched element and ends the processing when the second condition is met. 
@@ -102,8 +112,12 @@ class ListBuffer:
         value = {'timestamp': timestamp, 'seq': packet[TCP].seq, 'ack': packet[TCP].ack,
              'length': tcp_payload_len, 'ACK': int(ack_flag), 'SYN': int(syn_flag), 'next_seq': next_seq,'direction' = 'forward'}
         '''
-        self.tcp_state : dict
-        first_matched_value = None
+        if 'Retransmission' in new_element and new_element['ts_val'] == -1:
+            return None
+        if 'Retransmission' in new_element:
+            self.add(copy.deepcopy(new_element))
+            return None
+        first_matched_value: dict | None = None
         # 从新到旧遍历缓冲区
         i = len(self.buffer) - 1
         while i >= 0:
@@ -123,13 +137,18 @@ class ListBuffer:
             #print('add new element', new_element)
         if (first_matched_value is None) or (new_element['timestamp'] - first_matched_value['timestamp'] > 1 - 1e-3):
             return None
-        
         return first_matched_value
     # typical back-to-back TCP packets
     # 1. C->S: seq = x, ack = y, time = 0.0001
     # 2. C->S: seq = x+50, ack = y, time = 0.0002
     # 3. S->C: seq = y, ack = x+50
-    def process_normal_tcp_element(self, new_element : dict ,is_add : bool, mtu : list = [1000, 1000] , gap_time = 0.004) -> typing.Union[list, bool]:
+    def process_normal_tcp_element(
+        self,
+        new_element: dict,
+        is_add: bool,
+        mtu: list | None = None,
+        gap_time: float = 0.004
+    ) -> tuple[dict, str] | None:
         '''
         This function processes a new element in the buffer and returns the first matched element, aiming to detect normal/back-to-back TCP packets 
         
@@ -139,12 +158,15 @@ class ListBuffer:
         return:
             first_matched_value: the first matched value in the buffer
         '''
+        if mtu is None:
+            mtu = [1000, 1000]
+        if 'Retransmission' in new_element and new_element['ts_val'] == -1:
+            return None
         if 'Retransmission' in new_element:
             self.add(copy.deepcopy(new_element))
-            return 
-        self.tcp_state : dict
+            return None
         RETRANS_flag = False
-        first_match_value = None
+        first_match_value: dict | None = None
         new_ack = new_element['ack']
         # 假设背靠背的TCP包全部是相同的ACK
         current_seq = -1
@@ -158,24 +180,20 @@ class ListBuffer:
         ack_len = new_element['ack_length']
         temp_rtt = -1
         # 如果这个重传包没有ts_val，直接返回
-        if 'Retransmission' in new_element and new_element['ts_val'] == -1:
-            return None, None
+
         while i >= 0:
             current_element = self.buffer[i]# 考虑之前的包
             print(current_element)
-                # 额外的时间戳检查条件
+            # 额外的时间戳检查条件
             if new_element['direction'] != current_element['direction']: # 不同方向
-                print('=====entered====')
-                tsval_match = (current_element.get('ts_val', 0) == new_element.get('ts_ecr', 0))
+                tsval_match = (current_element.get('ts_val', 0) <= new_element.get('ts_ecr', 0))
                 if tsval_match:
                     is_match = True
-                if not is_match:
-                    i -= 1
-                    continue
+                # 
                 if current_element['seq'] > new_element['ack']:
                     i -= 1
                     continue
-                if current_element['ack'] + (current_element['FIN'] == 1) < new_element['seq_range']:# 过早的数据包
+                if current_element['seq'] + (current_element['FIN'] == 1) + current_element['length'] < new_element['seq_range']:# 过早的数据包
                     self.buffer.pop(i)# 过期的不留
                     self.count -= 1
                     i -= 1
@@ -185,17 +203,23 @@ class ListBuffer:
                     self.count -= 1
                     i -= 1
                     continue
-                elif current_element['FIN'] == 1:
+                elif current_element['FIN'] == 1 or current_element['SYN'] == 1:
                     if current_element['seq'] == new_element['ack'] - 1:
                         first_match_value = copy.deepcopy(current_element)
                         self.buffer.pop(i)
                         self.count -= 1
                         break
-                        
-                elif current_element['ack']  >= new_element['seq_range'] and current_element['ack']  <= new_element['seq']:
+                elif (
+                    #current_element['ack']  >= new_element['seq_range'] and current_element['ack']  <= new_element['seq']
+                    current_element['seq'] + current_element['length'] > new_element['seq_range'] and # current_element报文没有过时
+                    current_element['ack'] <= new_element['seq'] and # current_element没有在new_element之后
+                    current_element['seq'] < new_element['ack'] and # current_element在new_element之前
+                    (is_match or not ('Retransmission' in current_element)) and # 如果时间戳匹配到了 那就正常，如果没有匹配上 那需要保证current不是重传
+                    True
+                ):
                     if 'Retransmission' in new_element:
                         RETRANS_flag = True
-                        return None, None
+                        return None
                     # 如果是第一个匹配的包
                     if first_match_value is None:
                         if current_element['next_seq'] == new_element['ack']:
@@ -204,7 +228,7 @@ class ListBuffer:
                         # 如果第一个匹配的包是合并了多个包的包，直接定义为背靠背
                         current_element['is_matched'] = True
                         count += 1
-                        tmep_rtt = new_element['timestamp'] - current_element['timestamp']
+                        temp_rtt = new_element['timestamp'] - current_element['timestamp']
                         current_seq = first_match_value['seq']
                         if current_element['length'] >= 1400:
                             big_packet_flag = True
@@ -217,20 +241,28 @@ class ListBuffer:
                         if (
                             #abs(first_match_value['timestamp'] - current_element['timestamp']) < 1e-4 and count and current_element['length'] > 1000
                             #abs(first_match_value['timestamp'] - current_element['timestamp']) < min(max(temp_rtt * 0.05, 1e-3), 0.02) and 
-                            ack_len > 0 and current_element['length'] > 0 and current_element['seq'] + current_element['length'] == current_seq
+                            ack_len > 0 and current_element['length'] > 0 and current_element['seq'] + current_element['length'] == current_seq and first_match_value['timestamp'] - current_element['timestamp'] < 30 * 1e-3 
                         ):    
-                            count += 1
                             ack_len -= current_element['length']
                             current_seq = current_element['seq']
-                            self.buffer.pop(i)
-                            self.count -= 1
+                            if ack_len >= 0:
+                                count += 1
+                                self.buffer.pop(i)
+                                self.count -= 1
+                            else:
+                                current_element['is_matched'] = True
                             if current_element['length'] >= 1400:
                                 big_packet_flag = True
                         # 如果超时了，或者有间隔
                         else :
                             self.buffer.pop(i)
                             self.count -= 1
-                
+                # 如果没过期了就删掉
+                elif (
+                    current_element['seq'] + current_element['length'] < new_element['seq_range']
+                ):
+                    self.buffer.pop(i)
+                    self.count -= 1
             if new_element['direction'] == current_element['direction']:#相同方向
                 if new_element['ack'] <= current_element['ack'] :
                     break
@@ -239,15 +271,16 @@ class ListBuffer:
         if is_add:
             self.add(copy.deepcopy(new_element))
         if RETRANS_flag:
-            return None, None
+            return None
         # 如果没有找到匹配的包或者延迟太大，返回None
-        if first_match_value is None:# and ( new_element['timestamp'] - first_match_value['timestamp'] > 1 - 1e-3 or 1):
-            return None, None
+        if first_match_value is None:
+            return None
         res = "Back-to-Back"
         # 如果存在GAP，返回GAP
+        print('****', count)
         if GAP_flag:
             res = "GAP"
-        elif count < 2:
+        elif count < 2 :
             if big_packet_flag and first_match_value['is_matched'] == False:
                 res = "BIG-PACKET"
             else:
@@ -260,7 +293,7 @@ class ListBuffer:
         self.buffer = []
         self.count = 0             
             
-    def print_lb(self):
+    def print_lb(self) -> None:
         for item in self.buffer:
             print(self.buffer)
     def __str__(self) -> str:
@@ -269,31 +302,42 @@ class ListBuffer:
         return self.__str__()
     
 
-def random_compare_listbuffer(l1 : ListBuffer | dict, l2 : ListBuffer) -> bool:
+def random_compare_listbuffer(l1: ListBuffer | dict, l2: ListBuffer) -> bool:
     '''
     This function compares two ListBuffers and returns True if the first ListBuffer is selected, and False otherwise
     
     havent been used
     '''
-    timestamp = max(l1.buffer[-1]['timestamp'], l2.buffer[-1]['timestamp'])
+    # l1 can be ListBuffer or dict
     if isinstance(l1, dict):
+        # if l1 is a dict, assign a fixed weight and use l2's last timestamp
+        timestamp = l2.buffer[-1]['timestamp'] if l2.buffer else 0.0
         weight1 = 25
-    else:
+    elif isinstance(l1, ListBuffer):
+        # both are ListBuffer
+        timestamp = max(l1.buffer[-1]['timestamp'] if l1.buffer else 0.0, l2.buffer[-1]['timestamp'] if l2.buffer else 0.0)
         weight1 = calc_listbuffer_weight(l1, timestamp)
+    else:
+        # fallback, treat as zero
+        timestamp = l2.buffer[-1]['timestamp'] if l2.buffer else 0.0
+        weight1 = 0
     weight2 = calc_listbuffer_weight(l2, timestamp)
+    if weight1 + weight2 == 0:
+        return False
     if random.random() < weight1 / (weight1 + weight2):
         return True
     else:
         return False
-def calc_listbuffer_weight(l1, timestamp) -> int:
+
+def calc_listbuffer_weight(l1: ListBuffer, timestamp: float) -> int:
     # 计算ListBuffer的权重, 返回listbuffer中距离timestamp不超过20的元素的个数
     count = 0
-    for i in range(len(l1)):
-        if abs(l1[i] - timestamp) <= 20:
+    for item in l1.buffer:
+        if isinstance(item, dict) and abs(item.get('timestamp', 0.0) - timestamp) <= 20:
             count += 1
     return count
 
-class TcpState():
+class TcpState:
     def __init__(self) -> None:
         # 初始化TCP状态
         self._reset_state()
@@ -307,8 +351,8 @@ class TcpState():
         self.throught_output = [0, 0] # forward, backward
         self.valid_throughput = [0, 0] # forward, backward
         self.live_span = [-1, -1] # start, end
-        self.init_seq = [-1, -1]
-        self.end_seq = [-1, -1]
+        self.init_seq = [-1, -1] # 前向
+        self.end_seq = [-1, -1] # 后向
         self.fin_sign = 0
         self.packet_count = [0, 0]
         # 这里应该加一个更新的操作
@@ -316,7 +360,7 @@ class TcpState():
         # return live_span, throught_output, valid_throughput
     def clear(self) -> None:
         self._reset_state()
-    def update_state(self, value: dict) -> None:
+    def update_state(self, value: dict) -> tuple[bool, str, int, int]:
         '''
         Updates the internal state of the TCP connection based on the provided packet details.
 
@@ -353,7 +397,7 @@ class TcpState():
         print('-------------------')
         print(value)
         print(self.forward_range, self.backward_range)
-        
+        seq_range = self.backward_range[opp_direction_idx]
         Heartbeat = False
         if next_seq == self.forward_range[direction_idx] - 1:
             Heartbeat = True
@@ -368,21 +412,36 @@ class TcpState():
         print('****',self.forward_range, self.backward_range)
         # Determine packet type and validity
         is_valid, packet_type = self._classify_packet(value, update_forward, update_backward, is_heartbeat=Heartbeat)
-        seq_range = self.backward_range[direction_idx]
+        
         return is_valid, packet_type, ack_length, seq_range
 
-    def _classify_packet(self, value, update_forward, update_backward, is_heartbeat=False):
+    def _classify_packet(
+        self,
+        value: dict,
+        update_forward: bool,
+        update_backward: bool,
+        is_heartbeat: bool = False
+    ) -> tuple[bool, str]:
         '''
         Classifies the type of the packet based on TCP flags and updates.
         '''
         if value.get('RST', False):
             return False, 'Reset'
         if value.get('SYN', False) and value.get('ACK', False):
-            return True, 'SYN-ACK'
+            if update_forward:
+                return True, 'SYN-ACK'
+            else:
+                return False, 'Retransmission'
         if value.get('SYN', False):
-            return True, 'SYN'
+            if update_forward and update_backward:
+                return True, 'SYN'
+            else:
+                return False, 'Retransmission'
         if value.get('FIN', False):
-            return True, 'FIN'
+            if update_forward:
+                return True, 'FIN'
+            else:
+                return False, 'Retransmission'
         if value['length'] > 0 and not update_backward and not update_forward:
             return False, 'Retransmission'
         if value['length'] == 0:
@@ -393,7 +452,7 @@ class TcpState():
             else:
                 return False, 'Duplicate ACK'
         return True, 'Normal'
-    def __update_state(self, value : dict) -> None:
+    def __update_state(self, value: dict) -> tuple[bool, str]:
         '''
         value = {
             'timestamp': packet.time,
@@ -520,7 +579,7 @@ class TcpState():
     def __str__(self) -> str:
         return f"TcpState(forward_range={self.forward_range}, backward_range={self.backward_range})"
 
-class CuckooHashTable():
+class CuckooHashTable:
     '''
     key: a dictionary containing the keys to be inserted,
         essential: 'ip' and 'protocol', ip is a tuple containing source IP and destination IP
@@ -533,26 +592,29 @@ class CuckooHashTable():
             for NTP : 'code'
             for DNS : 'query', 'response', 'id'
     '''
-    def __init__(self, initial_size = 100013, buffersize = 300, type = 'Normal') -> None:
+    def __init__(
+        self,
+        initial_size: int = 100013,
+        buffersize: int = 300,
+        type: str = 'Normal'
+    ) -> None:
         '''
         Initialize the CuckooHashTable with the given initial size and buffer size
         parameter:
             initial_size: the initial size of the hash table
             buffersize: the size of the buffer
-        
-        
         我觉得最大30就够了
         '''
-        self.size = initial_size
-        self.buffersize = buffersize
-        self.type = type
-        self.tables = [[None] * self.size for _ in range(3)]# [None] or [key, stage_name]
-        self.values = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
+        self.size: int = initial_size
+        self.buffersize: int = buffersize
+        self.type: str = type
+        self.tables: list[list[list | tuple[dict, str] | None]] = [[None] * self.size for _ in range(3)]  # [None] or [key, stage_name] (as tuple)
+        self.values: list[list[ListBuffer]] = [[ListBuffer(buffersize) for _ in range(self.size)] for _ in range(3)]
         if self.type == 'TCP':
-            self.tcp_state =[ [ TcpState() for _ in range(self.size)] for _ in range(3)]
-        self.num_items = 0
-        self.rehash_threshold = 0.6
-        self.max_rehash_attempts = 5
+            self.tcp_state: list[list[TcpState]] = [[TcpState() for _ in range(self.size)] for _ in range(3)]
+        self.num_items: int = 0
+        self.rehash_threshold: float = 0.6
+        self.max_rehash_attempts: int = 5
         
     def hash_ip(self, ip : ipaddress.IPv4Address | ipaddress.IPv6Address) -> int:
         '''
@@ -599,24 +661,38 @@ class CuckooHashTable():
     def _rehash(self) -> None:
         '''
         This function rehashes the hash table when collisions occur, doubling the size of the hash table and reinserting all items
-        params:
-            None
-        return:
-            None
         '''
-        # 重新哈希的实现
-        old_size = self.size
+        old_size: int = self.size
         self.size *= 2
         old_tables = self.tables
         old_values = self.values
         self.tables = [[None] * self.size for _ in range(3)]
-        self.values = [[ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize) for _ in range(self.size)] for _ in range(3)]
+        self.values = [
+            [
+                ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
+                for _ in range(self.size)
+            ]
+            for _ in range(3)
+        ]
         self.num_items = 0  # Reset item count
 
         for table in range(3):
             for i in range(old_size):
-                if old_tables[table][i] is not None:
-                    self._insert_directly(old_tables[table][i], old_values[table][i])
+                key_entry = old_tables[table][i]
+                # Accept both list and tuple for key_entry, but ensure it's a tuple[dict, str]
+                if (
+                    key_entry is not None
+                    and (isinstance(key_entry, (list, tuple)))
+                    and len(key_entry) == 2
+                    and isinstance(key_entry[0], dict)
+                    and isinstance(key_entry[1], str)
+                ):
+                    # Convert to tuple if not already
+                    if not isinstance(key_entry, tuple):
+                        key_entry_tuple = (key_entry[0], key_entry[1])
+                    else:
+                        key_entry_tuple = key_entry
+                    self._insert_directly(key_entry_tuple, old_values[table][i])
         '''
         old_values1 = self.values1
         old_values2 = self.values2
@@ -645,47 +721,64 @@ class CuckooHashTable():
                     for item in old_values2[i].buffer:
                         target_values[index].add(item)
         '''
-    def insert(self, key: dict, value  : dict = {}) -> bool:
+    def insert(self, key: dict, value: dict | None = None) -> bool:
         '''
         function: insert a key into the index table , if the insertion fails after multiple attempts and rehashing, return False
         parameter:
             key: a dictionary containing the keys to be inserted
-            value: a ListBuffer containing the values to be inserted
+            value: a dictionary containing the values to be inserted
         return:
             success: a boolean value indicating whether the insertion is successful
         '''
-        table_num, _= self.lookup(key)
+        if value is None:
+            value = {}
+        table_num, _ = self.lookup(key)
         if table_num is not None:
             index = self.hash_functions(key, table_num)
-            target_key = self.tables[table_num][index][0]
-            if target_key['ip'] == key['ip'] and target_key['protocol'] == key['protocol']:
-                value['direction'] = 'forward'
+            # Defensive: check structure before indexing
+            table_entry = self.tables[table_num][index]
+            if (
+                isinstance(table_entry, list)
+                and len(table_entry) == 2
+                and isinstance(table_entry[0], dict)
+                and isinstance(table_entry[1], str)
+            ):
+                target_key = table_entry[0]
+                if target_key.get('ip') == key.get('ip') and target_key.get('protocol') == key.get('protocol'):
+                    value['direction'] = 'forward'
+                else:
+                    value['direction'] = 'backward'
+                self.values[table_num][index].add(value)
+                return True
             else:
-                value['direction'] = 'backward'
-            self.values[table_num][index].add(value)
-            return True
+                # Should not happen, but skip if structure is not as expected
+                return False
 
-        generate_key = [key, 'stage_1']
+        generate_key: tuple[dict, str] = (key, 'stage_1')
         if value == {}:
-            value['direction'] = 'forward'    
+            value['direction'] = 'forward'
         success, _ = self._insert_directly(generate_key, value)
 
         if not success:
             self._rehash()
             success, _ = self._insert_directly(generate_key, value)
         return success
-    
-    def _insert_directly(self, key: typing.List[typing.Union[dict, str]], value: dict) -> typing.Tuple[bool, list]:
+
+    def _insert_directly(
+        self,
+        key: tuple[dict, str],
+        value: dict | ListBuffer
+    ) -> tuple[bool, list]:
         '''
         function: insert a key into the index table without rehashing
         parameter:
-            key: a dictionary containing the keys to be inserted
-            value: a ListBuffer containing the values to be inserted
+            key: a list [dict, str] containing the keys to be inserted
+            value: a dict or ListBuffer containing the values to be inserted
         return:
             is_success: a boolean value indicating whether the insertion is successful
             path: a list containing the path of the key
         '''
-        path = []
+        path: list = []
         current_key = key
         current_value = value
         starting_table = 0
@@ -693,83 +786,127 @@ class CuckooHashTable():
         is_Lb = False
         while True:
             for table_id in range(starting_table, 3):
-                index = self.hash_functions(current_key[0], table_id)
-                if not is_Lb:
-                    current_value : dict
-                    if self.tables[table_id][index] is None:
-                        self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
-                        self.values[table_id][index].add(current_value)
-                        is_Lb = True
-                        self.num_items += 1
-                        is_end = True
-                        break
-                    else:# random replace
-                        # 此处增加随机替换的判定条件 如果满足就替换
-                        
-                        evicted_key = copy.deepcopy(self.tables[table_id][index])
-                        evicted_value = copy.deepcopy(self.values[table_id][index])
-                        self.tables[table_id][index] = current_key
-                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
-                        self.values[table_id][index].add(current_value)
-                        current_key = evicted_key
-                        path.append(current_key)
-                        if evicted_key[1] == 'stage_3':
-                            current_value = evicted_value
-                            is_end = True
-                            is_increase = False
-                            break
-                        else:
-                            evicted_key[1] = stage_name[stage_name.index(evicted_key[1]) + 1]
-                            current_value = evicted_value
-                            is_Lb = True
+                # Ensure current_key is a tuple[dict, str]
+                if (
+                    isinstance(current_key, (list, tuple))
+                    and len(current_key) == 2
+                    and isinstance(current_key[0], dict)
+                    and isinstance(current_key[1], str)
+                ):
+                    # If it's a list, convert to tuple for consistency
+                    if not isinstance(current_key, tuple):
+                        current_key = (current_key[0], current_key[1])
+                    index = self.hash_functions(current_key[0], table_id)
                 else:
-                    current_value : ListBuffer
-                    if current_key in path:
-                        is_end = True
-                        break
-                    # 替换并置换现有键
+                    continue  # skip illegal structure
+                if not is_Lb:
+                    # current_value is dict
                     if self.tables[table_id][index] is None:
                         self.tables[table_id][index] = current_key
                         self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
-                        for element in current_value.buffer:
-                            self.values[table_id][index].add(element)
+                        if isinstance(current_value, dict):
+                            self.values[table_id][index].add(current_value)
                         is_Lb = True
                         self.num_items += 1
                         is_end = True
                         break
                     else:
                         evicted_key = copy.deepcopy(self.tables[table_id][index])
+                        # Always convert to tuple for consistency
+                        if not isinstance(evicted_key, tuple) and isinstance(evicted_key, (list, tuple)) and len(evicted_key) == 2:
+                            evicted_key = (evicted_key[0], evicted_key[1])
                         evicted_value = copy.deepcopy(self.values[table_id][index])
                         self.tables[table_id][index] = current_key
                         self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
-                        for element in evicted_value.buffer:
-                            self.values[table_id][index].add(element)
+                        if isinstance(current_value, dict):
+                            self.values[table_id][index].add(current_value)
                         current_key = evicted_key
                         path.append(current_key)
-                        if evicted_key[1] == 'stage_3':
+                        if (
+                            isinstance(evicted_key, tuple)
+                            and len(evicted_key) == 2
+                            and isinstance(evicted_key[1], str)
+                            and evicted_key[1] == 'stage_3'
+                        ):
                             current_value = evicted_value
                             is_end = True
                             is_increase = False
                             break
-                        else:
-                            evicted_key[1] = stage_name[stage_name.index(evicted_key[1]) + 1]
-                            current_value = evicted_value 
+                        elif (
+                            isinstance(evicted_key, tuple)
+                            and len(evicted_key) == 2
+                            and isinstance(evicted_key[1], str)
+                        ):
+                            # promote stage
+                            evicted_key = (evicted_key[0], stage_name[stage_name.index(evicted_key[1]) + 1])
+                            current_key = evicted_key
+                            current_value = evicted_value
+                            is_Lb = True
+                else:
+                    # current_value is ListBuffer
+                    if current_key in path:
+                        is_end = True
+                        break
+                    if self.tables[table_id][index] is None:
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
+                        if isinstance(current_value, ListBuffer):
+                            for element in current_value.buffer:
+                                self.values[table_id][index].add(element)
+                        is_Lb = True
+                        self.num_items += 1
+                        is_end = True
+                        break
+                    else:
+                        evicted_key = copy.deepcopy(self.tables[table_id][index])
+                        if not isinstance(evicted_key, tuple) and isinstance(evicted_key, (list, tuple)) and len(evicted_key) == 2:
+                            evicted_key = (evicted_key[0], evicted_key[1])
+                        evicted_value = copy.deepcopy(self.values[table_id][index])
+                        self.tables[table_id][index] = current_key
+                        self.values[table_id][index] = ListBuffer(self.buffersize, tcp_state=True) if self.type == 'TCP' else ListBuffer(self.buffersize)
+                        if isinstance(evicted_value, ListBuffer):
+                            for element in evicted_value.buffer:
+                                self.values[table_id][index].add(element)
+                        current_key = evicted_key
+                        path.append(current_key)
+                        if (
+                            isinstance(evicted_key, tuple)
+                            and len(evicted_key) == 2
+                            and isinstance(evicted_key[1], str)
+                            and evicted_key[1] == 'stage_3'
+                        ):
+                            current_value = evicted_value
+                            is_end = True
+                            is_increase = False
+                            break
+                        elif (
+                            isinstance(evicted_key, tuple)
+                            and len(evicted_key) == 2
+                            and isinstance(evicted_key[1], str)
+                        ):
+                            evicted_key = (evicted_key[0], stage_name[stage_name.index(evicted_key[1]) + 1])
+                            current_key = evicted_key
+                            current_value = evicted_value
             if is_end:
                 break
         return key not in path, path
-    def lookup(self, key: dict) -> typing.Tuple[int, ListBuffer]:
+
+    def lookup(self, key: dict) -> tuple[int, int] | tuple[None, None]:
         '''
-        parameter:
-        
             key: a dictionary containing the keys to be looked up
         return:
-            table_num: the table number where the key is found
-            index: the index where the key is found
+            (table_num, index): the table number and index where the key is found, or (None, None) if not found
         '''
         for table_id in range(3):
             index = self.hash_functions(key, table_id)
-            if self.tables[table_id][index] is not None and match_keys(self.tables[table_id][index][0], key):
+            table_entry = self.tables[table_id][index]
+            if (
+                isinstance(table_entry, (list, tuple))
+                and len(table_entry) == 2
+                and isinstance(table_entry[0], dict)
+                and isinstance(table_entry[1], str)
+                and match_keys(table_entry[0], key)
+            ):
                 return table_id, index
         return None, None  # Key not found
     def delete(self, key : dict) -> bool:
@@ -781,7 +918,14 @@ class CuckooHashTable():
         '''
         for table_id in range(3):
             index = self.hash_functions(key, table_id)
-            if self.tables[table_id][index]is not None and match_keys(self.tables[table_id][index][0], key):
+            table_entry = self.tables[table_id][index]
+            if (
+                table_entry is not None
+                and isinstance(table_entry, (list, tuple))
+                and len(table_entry) == 2
+                and isinstance(table_entry[0], dict)
+                and match_keys(table_entry[0], key)
+            ):
                 self.tables[table_id][index] = None
                 self.num_items -= 1
                 return True

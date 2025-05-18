@@ -1,7 +1,7 @@
 import sys
 sys.path.append('/Users/choumingxi/Documents/GitHub/newrtt/src')
 import ipaddress
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, deque
 import time
 import statistics
 from random import randint
@@ -9,10 +9,7 @@ import logging
 import os
 import pickle
 import math
-import time
 import seaborn
-import math
-from collections import deque
 from ipaddress import IPv4Address, IPv6Address
 import copy
 import matplotlib.pyplot as plt
@@ -23,8 +20,6 @@ from Analyser import Analyser
 # 分类不同协议的，只在同类协议内比较
 # 如果超过以当前窗口内的平均值为中心的一定范围后要报告，timestamp，rtt，delta给上层
 from datetime import datetime, timedelta
-import numpy as np
-import math
 
 
 def merge_dictionaries(*dicts):
@@ -137,7 +132,8 @@ def default_rtt_state():
     }
 def default_int_dict():
     return defaultdict(int)
-
+def default_list_dict():
+    return defaultdict(list)
 class CompressedIPNode:
     '''
     This class represents a node in a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
@@ -159,7 +155,11 @@ class CompressedIPNode:
         rtt_stats: A dictionary of RTT statistics
         rtt_WelfordVariance: A WelfordVariance object for calculating RTT variance 
     '''
-    def __init__(self, network : ipaddress.IPv4Address|ipaddress.IPv6Address, logger : str=None):
+    def __init__(
+        self,
+        network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+        logger: logging.Logger | None = None
+    ):
         '''
 
         params:
@@ -167,59 +167,47 @@ class CompressedIPNode:
             logger: 日志记录器
         初始化一个新的IP节点。
         '''
-        self.network = network # 记录当前节点的网络范围
-        self.subnets = []  # 记录由哪些子网合并而来
-        self.children = {} # 存储子节点 (str, CompressedIPNode)
-        self.parent = None  # 记录父节点
-        self.parent : CompressedIPNode | None
-        self.alerts = []
-        self.logger = logger
-        self.contain_ip_number = 0
-        self.contain_rtt_ip_number = 0
-        self.stats = defaultdict(default_state)
+        self.network = network  # 记录当前节点的网络范围
+        self.subnets: list = []  # 记录由哪些子网合并而来
+        self.children: dict = {}  # 存储子节点 (str, CompressedIPNode)
+        self.parent: 'CompressedIPNode | None' = None  # 记录父节点
+        self.alerts: list = []
+        self.logger: logging.Logger | None = logger
+        self.contain_ip_number: int = 0
+        self.contain_rtt_ip_number: int = 0
+        self.stats: defaultdict[tuple, dict] = defaultdict(default_state)
         # 以下是对延迟估计的统计数据
-        packet_type = []
-        self.rtt_estimation = {packet: Analyser(type=packet) for packet in packet_type}
-        self.partial_rtt_estimation = {
-            packet : [] for packet in packet_type                               
-        }
-        self.partial_rtt_estimation['link'] = []
-        
+        self.rtt_estimation: dict = {}  # type: ignore
+        self.partial_rtt_estimation: dict = {'link': []}
         # 以下是用于检测RTT的统计数据
-        self.rtt_records = defaultdict(list) # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
-        self.all_rtt_records = [] # 所有正常的rtt记录，不区分协议和模式
-        self.all_delta_records = [] # 所有正常的rtt delta记录，不区分协议和模式
-        
+        self.rtt_records: defaultdict[tuple[str, str], list[tuple[float, float]]] = defaultdict(list)  # 正常的rtt记录，key是(protocol, pattern)，value是rtt列表
+        self.all_rtt_records: list[tuple[float, float]] = []  # 所有正常的rtt记录，不区分协议和模式
+        self.all_delta_records: list = []  # 所有正常的rtt delta记录，不区分协议和模式
         # 以下是用于检测RTT的异常数据
-        self.anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
-        self.subnets_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
-        
+        self.anomalous_rtts_records: defaultdict[tuple, list] = defaultdict(list)  # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
+        self.subnets_anomalous_rtts_records: defaultdict[tuple, list] = defaultdict(list)  # 异常的rtt记录，key是(protocol, pattern)，value是rtt列表
         # 以下是用于检测RTT变化的异常数据
-        self.anomalous_delta_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt, delta列表
-        self.subnets_delta_anomalous_rtts_records = defaultdict(list) # 异常的rtt记录，key是(protocol, pattern)，value是rtt,delta列表
-        
-        self.rtt_stats = {
+        self.anomalous_delta_rtts_records: defaultdict[tuple, list] = defaultdict(list)  # 异常的rtt记录，key是(protocol, pattern)，value是rtt, delta列表
+        self.subnets_delta_anomalous_rtts_records: defaultdict[tuple, list] = defaultdict(list)  # 异常的rtt记录，key是(protocol, pattern)，value是rtt,delta列表
+        self.rtt_stats: dict[str, float] = {
             'min_rtt': float('inf'),
-            'max_rtt': float('-inf'), 
+            'max_rtt': float('-inf'),
         }
-        
-        self.accumulate_normal_stats = defaultdict(int)
-        self.accumulate_rtt_stats = defaultdict(int)
-        self.accumulate_delta_stats = defaultdict(int)
-        
-        self.rtt_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.accumulate_normal_stats: defaultdict[tuple, int] = defaultdict(int)
+        self.accumulate_rtt_stats: defaultdict[tuple, int] = defaultdict(int)
+        self.accumulate_delta_stats: defaultdict[tuple, int] = defaultdict(int)
+        self.rtt_WelfordVariance: WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
         # 以下是用于检测网络活动的统计数据
-        
-        self.dns_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
-        self.icmp_ntp_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
-        self.tcp_WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
-        self.all_delta_records = []
-        
+        self.dns_WelfordVariance: WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.icmp_ntp_WelfordVariance: WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.tcp_WelfordVariance: WelfordVariance = WelfordVariance(time_window=1000, max_count=1000)
+        self.all_delta_records: list = []
         # 以下记录流量记录
-        self.flows_record = [] # live_span, ports, throughput, valid_throughput
-        self.packet_len = {}    
-        self.packet_len_stats = defaultdict(default_int_dict)
-    def add_packet(self, key, length):
+        self.flows_record: list = []  # live_span, ports, throughput, valid_throughput
+        self.packet_len: dict = {}
+        self.packet_len_stats: defaultdict = defaultdict(default_int_dict)
+        self.packet_rtt_stats: defaultdict = defaultdict(default_list_dict)  # key: (protocol, pattern), value: {length: [rtt]}
+    def add_packet(self, key, length, rtt):
         """
         添加数据包长度
         参数:
@@ -229,6 +217,7 @@ class CompressedIPNode:
             None
         """
         self.packet_len_stats[key][length] += 1
+        self.packet_rtt_stats[key][length].append(rtt)
     def print_packet_len_cdf(self, exclude_zero=False, max_length=2800):
         """
         计算并打印数据包长度的 CDF，同时绘制 CDF 图，并显示总数信息。
@@ -343,7 +332,8 @@ class CompressedIPNode:
         elif protocol == "TCP":
             welford_variance = self.tcp_WelfordVariance
         else:
-            self.logger.warning(f"Unknown protocol: {protocol}")
+            if self.logger:
+                self.logger.warning(f"Unknown protocol: {protocol}")
             return
         #这一个是检测全部rtt的 即将淘汰===MARK
         if 0 and check_anomalies and self.is_rtt_anomalous(rtt, timestamp): # 检查RTT是否异常，需要设置check_anomalies=True
@@ -360,16 +350,17 @@ class CompressedIPNode:
         else: # 如果RTT正常，则记录到正常的rtt记录中
             if check_anomalies == False:
                 self.rtt_WelfordVariance.update(rtt, timestamp)
-            self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+            if self.logger:
+                self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             self.rtt_records[key].append((rtt, timestamp))
-            self.add_packet(key, length)
+            self.add_packet(key, length, rtt)
             self.all_rtt_records.append((rtt, timestamp))
             if self.rtt_WelfordVariance.recorded_count >=2 * self.rtt_WelfordVariance.initial_limit:
                 if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
                     self.rtt_stats['min_rtt'] = rtt
                 if rtt > self.rtt_stats['max_rtt'] and rtt < 1e4:
                     self.rtt_stats['max_rtt'] = rtt
-                
+            
             if self.logger:
                 self.logger.debug(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
             # 父母就不检查了，向上传递
@@ -417,7 +408,8 @@ class CompressedIPNode:
         上游RTT。
         '''
         key = (protocol, pattern)
-        self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
+        if self.logger:
+            self.logger.info(f'Recorded RTT: {protocol} - {rtt}ms at {timestamp}')
         max_mask = 24 if self.network.version == 4 else 24 * 4
         # 只记录到一定的子网掩码长度
         if self.network.prefixlen >= max_mask:
@@ -425,7 +417,6 @@ class CompressedIPNode:
             self.all_rtt_records.append((rtt, timestamp))
         self.rtt_WelfordVariance.update(rtt, timestamp)
         # 无论多大，都更新最大和最小值
-        
         if self.rtt_WelfordVariance.recorded_count >= self.rtt_WelfordVariance.initial_limit:
             if rtt < self.rtt_stats['min_rtt'] and rtt > 0 :
                 self.rtt_stats['min_rtt'] = rtt
@@ -433,14 +424,14 @@ class CompressedIPNode:
                 self.rtt_stats['max_rtt'] = rtt
         # if self.parent:
         #     self.parent.upstream_rtt(protocol, pattern, rtt, timestamp)
-    def record_packet_len(self, key, length : int):
+    def record_packet_len(self, key, length : int, rtt : float):
         '''
         This function records the packet length.
         params:
             length: The length of the packet
         记录数据包长度。
         '''
-        self.add_packet(key, length)
+        self.add_packet(key, length, rtt)
     def record_activity_recursive(self, protocol : str, action : str, count = 1, timestamp = None, check_anomalies=False):
         '''
         This function records activity recursively.
@@ -580,11 +571,12 @@ class CompressedIPNode:
         '''
         timestamp = anormal_value[1]
         parent = self.parent
-        if parent.network.prefixlen < 24:
+        # 更安全的类型判断和嵌套判断
+        if parent is not None and parent.network.prefixlen < 24:
             return False
-        if parent.parent is not None and parent.parent.network.prefixlen >=24:
+        if parent and parent.parent and parent.parent.network.prefixlen >= 24:
             parent = parent.parent
-         
+
         # 获取同一子网下所有IP的异常RTT记录，限定在时间窗内
         anomalous_rtts = [
             record for record in self.anomalous_rtts_records.get(key, [])
@@ -594,25 +586,25 @@ class CompressedIPNode:
             record for record in self.subnets_anomalous_rtts_records.get(key, [])
             if record[1] + 10 > timestamp
         ]
-        
+
         # 合并同一时间窗内的异常RTT
         relevent_anomalous_rtts = anomalous_rtts + subnets_anomalous_rtts
         delta = anormal_value[3]
-        
+
         # 检查是否存在相关的异常RTT
         def check_relevant_anomalous_rtts(rtts, delta):
             accumulated_delta = [rtt[3] for rtt in rtts]
-            
+
             # 计算均值和标准差，并使用切比雪夫不等式检查
             if len(accumulated_delta) < 2:
                 return False
             mean = np.mean(accumulated_delta)
             sigma = np.std(accumulated_delta)
             k = np.sqrt(1 / 0.1)  # 设置90%的概率阈值
-            
+
             lower_bound = mean - k * sigma
             upper_bound = mean + k * sigma
-            
+
             # 如果delta在均值的k倍sigma范围内，则可能存在相关趋势
             return lower_bound <= delta <= upper_bound
 
@@ -720,6 +712,8 @@ class CompressedIPNode:
         for count, flow in enumerate(self.flows_record)
         )
         return f'{prefix}Flows Data count = {len(self.flows_record)} :\n{flow_info}'
+
+
 class CompressedIPTrie:
     '''
     This class represents a compressed trie for storing IP addresses. It supports both IPv4 and IPv6 addresses.
@@ -795,7 +789,7 @@ class CompressedIPTrie:
         merge_count = 2 
         max_subnet =  24 if self.ip_version == 4 else 96
         parent = new_net.parent
-        print('Parent:', parent.network)
+        print('Parent:', parent.network if parent else 'None')
         print('New:', new_net.network)
         while parent and new_net.network.prefixlen >= max_subnet:
             super_net = new_net.network.supernet(new_prefix=new_net.network.prefixlen - step)
@@ -826,7 +820,7 @@ class CompressedIPTrie:
             else:
                 break
 
-    def find_node(self, ip: str) -> CompressedIPNode:
+    def find_node(self, ip: str) -> CompressedIPNode | None:
         '''
         This function finds the node in the trie that contains the given IP address.
         params:
@@ -851,26 +845,6 @@ class CompressedIPTrie:
                     break
             if not found:
                 return None
-    def record_activity(self, ip : str, activity_type : str, count=1, timestamp=None):
-        '''
-        This function records activity for a given IP address. It will find the node that contains the IP address and record the activity.
-        If the IP address is not in the trie, it will be added first.
-        params: 
-            ip: The IP address
-            activity_type: The type of activity
-            count: The count of the activity
-            timestamp: The timestamp of the activity
-        returns:
-            None
-        '''
-        trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
-        trie : CompressedIPTrie
-        node = trie.find_node(ip)
-        if node == None:
-            trie.add_ip(ip)
-            node = trie.find_node(ip)
-        if node:
-            node.record_activity(activity_type, count, timestamp)
     def print_tree(self, node = None, indent = 0, file_path = 'tree.txt'):
         '''
         params:
@@ -964,7 +938,7 @@ class CompressedIPTrie:
         helper(node)  # 启动递归遍历
         return packet_length_records
 class NetworkTrafficMonitor:
-    def __init__(self, name = '', check_anomalies = 'True', logger = None):
+    def __init__(self, name: str = '', check_anomalies: bool = True, logger: logging.Logger | None = None):
         '''
         params:
             name: 名称
@@ -976,7 +950,9 @@ class NetworkTrafficMonitor:
         self.ipv6_trie = CompressedIPTrie(ip_version=6, logger=logger)
         self.timeslot = 0.2
         self.suffix = name
+        self.name = name
         self.check_anomalies = check_anomalies
+        self.logger = logger
     def add_ip_and_record_activity(self, ip, protocol, action, count=1, timestamp=None):
         '''
         params:
@@ -1049,7 +1025,8 @@ class NetworkTrafficMonitor:
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
         node = trie.find_node(ip)
         if node and protocol in node.rtt_records:
-            return statistics.mean(node.rtt_records[protocol]) if node.rtt_records[protocol] else None
+            rtts = node.rtt_records[protocol]
+            return statistics.mean([rtt for rtt, _ in rtts]) if rtts else None
         return None
     def record_packet_length(self, ip, packet_length):
         '''
@@ -1062,7 +1039,8 @@ class NetworkTrafficMonitor:
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
         node = trie.find_node(ip)
         if node:
-            node.record_packet_len(packet_length)
+            # 缺少key和rtt参数，使用默认值
+            node.record_packet_len(("Unknown", "Unknown"), packet_length, -1.0)
     def query_activity(self, ip : IPv4Address | IPv6Address, protocol :str, action :str):
         '''
         params:
@@ -1072,7 +1050,7 @@ class NetworkTrafficMonitor:
         查询活动。
         '''
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
-        node = trie.find_node(ip)
+        node = trie.find_node(str(ip))
         if node:
             key = (protocol, action)
             total_count = sum(item[0] for item in node.stats[key])  # 汇总所有count
@@ -1099,9 +1077,6 @@ class NetworkTrafficMonitor:
         if node:
             # 如果self.check_anomalies为True，则检查异常
             node.record_rtt(protocol, pattern, rtt, timestamp, length, check_anomalies= self.check_anomalies)
-        # 可选：检测异常情况
-        if 0:
-            node.check_rtt_anomalies()
     def detect_attack(self, ip, threshold = 1000):
         '''
         params:
@@ -1112,7 +1087,8 @@ class NetworkTrafficMonitor:
         trie = self.ipv4_trie if ipaddress.ip_address(ip).version == 4 else self.ipv6_trie
         node = trie.find_node(ip)
         if node:
-            total_requests = sum(node.stats.values())
+            # 修复统计总请求数的类型错误
+            total_requests = sum(item['count'] for item in node.stats.values())
             return total_requests > threshold
         return False
     def print_trees(self):
@@ -1214,7 +1190,8 @@ class NetworkTrafficMonitor:
                 if target_node is None:
                     trie.add_ip(str(child.network.network_address))
                     target_node = trie.find_node(str(child.network.network_address))
-                self.merge_nodes(target_node, child)
+                if target_node:
+                    self.merge_nodes(target_node, child)
             else:
                 self.merge_smallest_network(child, ip_version)
 
